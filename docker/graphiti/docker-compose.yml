@@ -1,0 +1,115 @@
+###############################################################################
+# openclaw-memory-rebac — Graphiti backend stack
+#
+# Services:
+#   falkordb    — graph database (FalkorDB, Redis-compatible)
+#   graphiti    — Graphiti MCP server (exposes /mcp over HTTP)
+#   spicedb-migrate — one-shot SpiceDB schema migration
+#   spicedb     — authorization engine (gRPC :50051, HTTP :8080)
+#   postgres    — SpiceDB backing store
+#
+# Usage:
+#   cp .env.example .env          # set SPICEDB_PRESHARED_KEY
+#   docker compose up -d
+#
+# Graphiti endpoint:  http://localhost:8000
+# SpiceDB endpoint:   localhost:50051 (insecure)
+###############################################################################
+
+name: openclaw-memory-rebac-graphiti
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # FalkorDB — graph store for Graphiti
+  # ---------------------------------------------------------------------------
+  falkordb:
+    image: falkordb/falkordb:latest
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - falkordb_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 10
+
+  # ---------------------------------------------------------------------------
+  # Graphiti MCP server
+  # ---------------------------------------------------------------------------
+  graphiti:
+    image: zepai/graphiti:latest
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-none}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-none}
+      # Point to local Ollama if running; override with GRAPHITI_LLM_BASE_URL
+      GRAPHITI_LLM_BASE_URL: ${GRAPHITI_LLM_BASE_URL:-http://host.docker.internal:11434/v1}
+      GRAPHITI_LLM_MODEL: ${GRAPHITI_LLM_MODEL:-llama3.1:8b}
+      GRAPHITI_EMBEDDER_BASE_URL: ${GRAPHITI_EMBEDDER_BASE_URL:-http://host.docker.internal:11434/v1}
+      GRAPHITI_EMBEDDER_MODEL: ${GRAPHITI_EMBEDDER_MODEL:-nomic-embed-text}
+      NEO4J_URI: bolt://falkordb:6379
+    depends_on:
+      falkordb:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL — SpiceDB backing store
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: spicedb
+      POSTGRES_PASSWORD: spicedb
+      POSTGRES_DB: spicedb
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U spicedb"]
+      interval: 5s
+      retries: 10
+
+  # ---------------------------------------------------------------------------
+  # SpiceDB migration (one-shot)
+  # ---------------------------------------------------------------------------
+  spicedb-migrate:
+    image: authzed/spicedb:latest
+    command: migrate head
+    environment:
+      SPICEDB_DATASTORE_ENGINE: postgres
+      SPICEDB_DATASTORE_CONN_URI: "postgres://spicedb:spicedb@postgres:5432/spicedb?sslmode=disable"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  # ---------------------------------------------------------------------------
+  # SpiceDB — authorization engine
+  # ---------------------------------------------------------------------------
+  spicedb:
+    image: authzed/spicedb:latest
+    command: serve
+    restart: unless-stopped
+    ports:
+      - "50051:50051"   # gRPC (insecure, dev mode)
+      - "8080:8080"     # HTTP metrics / healthz
+    environment:
+      SPICEDB_GRPC_PRESHARED_KEY: ${SPICEDB_PRESHARED_KEY:-dev_token}
+      SPICEDB_DATASTORE_ENGINE: postgres
+      SPICEDB_DATASTORE_CONN_URI: "postgres://spicedb:spicedb@postgres:5432/spicedb?sslmode=disable"
+      SPICEDB_GRPC_NO_TLS: "true"
+    depends_on:
+      spicedb-migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+
+volumes:
+  falkordb_data:
+  postgres_data:
