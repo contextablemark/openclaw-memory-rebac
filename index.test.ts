@@ -322,10 +322,12 @@ describe("openclaw-memory-rebac plugin", () => {
     plugin.default.register(mockApi);
 
     const cliHandler = registeredClis[0];
+    const mockCmd: Record<string, ReturnType<typeof vi.fn>> = {};
+    for (const m of ["command", "description", "argument", "option", "action"]) {
+      mockCmd[m] = vi.fn().mockReturnValue(mockCmd);
+    }
     const mockProgram = {
-      command: vi.fn().mockReturnValue({
-        description: vi.fn().mockReturnThis(),
-      }),
+      command: vi.fn().mockReturnValue(mockCmd),
     };
 
     cliHandler({ program: mockProgram });

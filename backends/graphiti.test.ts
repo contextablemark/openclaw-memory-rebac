@@ -1,4 +1,10 @@
 import { describe, test, expect, vi, beforeEach, afterEach } from "vitest";
+
+vi.mock("node:crypto", async (importOriginal) => {
+  const mod = await importOriginal<typeof import("node:crypto")>();
+  return { ...mod, randomUUID: vi.fn(() => "test-uuid-000") };
+});
+
 import { GraphitiBackend } from "./graphiti.js";
 import type { GraphitiConfig } from "./graphiti.js";
 
@@ -15,7 +21,7 @@ global.fetch = mockFetch as unknown as typeof fetch;
 
 describe("GraphitiBackend", () => {
   beforeEach(() => {
-    mockFetch.mockClear();
+    mockFetch.mockReset();
   });
 
   afterEach(() => {
@@ -44,6 +50,7 @@ describe("GraphitiBackend", () => {
       // Mock add_memory tool call
       mockFetch.mockResolvedValueOnce({
         ok: true,
+        headers: new Map([["content-type", "application/json"]]),
         json: vi.fn().mockResolvedValue({
           jsonrpc: "2.0",
           id: 2,
@@ -54,6 +61,7 @@ describe("GraphitiBackend", () => {
       // Mock get_episodes polling (return episode on first poll)
       mockFetch.mockResolvedValueOnce({
         ok: true,
+        headers: new Map([["content-type", "application/json"]]),
         json: vi.fn().mockResolvedValue({
           jsonrpc: "2.0",
           id: 3,
@@ -62,7 +70,7 @@ describe("GraphitiBackend", () => {
               {
                 type: "text",
                 text: JSON.stringify({
-                  episodes: [{ uuid: "real-uuid-123", name: "memory_ep-123", group_id: "main" }],
+                  episodes: [{ uuid: "real-uuid-123", name: "memory_test-uuid-000", group_id: "main" }],
                 }),
               },
             ],
@@ -92,6 +100,7 @@ describe("GraphitiBackend", () => {
 
       mockFetch.mockResolvedValueOnce({
         ok: true,
+        headers: new Map([["content-type", "application/json"]]),
         json: vi.fn().mockResolvedValue({
           jsonrpc: "2.0",
           id: 2,
@@ -128,6 +137,7 @@ describe("GraphitiBackend", () => {
       // Mock search_nodes
       mockFetch.mockResolvedValueOnce({
         ok: true,
+        headers: new Map([["content-type", "application/json"]]),
         json: vi.fn().mockResolvedValue({
           jsonrpc: "2.0",
           id: 2,
@@ -147,6 +157,7 @@ describe("GraphitiBackend", () => {
       // Mock search_memory_facts
       mockFetch.mockResolvedValueOnce({
         ok: true,
+        headers: new Map([["content-type", "application/json"]]),
         json: vi.fn().mockResolvedValue({
           jsonrpc: "2.0",
           id: 3,
@@ -197,6 +208,7 @@ describe("GraphitiBackend", () => {
 
       mockFetch.mockResolvedValueOnce({
         ok: true,
+        headers: new Map([["content-type", "application/json"]]),
         json: vi.fn().mockResolvedValue({
           jsonrpc: "2.0",
           id: 2,
@@ -215,6 +227,7 @@ describe("GraphitiBackend", () => {
 
       mockFetch.mockResolvedValueOnce({
         ok: true,
+        headers: new Map([["content-type", "application/json"]]),
         json: vi.fn().mockResolvedValue({
           jsonrpc: "2.0",
           id: 3,
@@ -249,6 +262,7 @@ describe("GraphitiBackend", () => {
 
       mockFetch.mockResolvedValueOnce({
         ok: true,
+        headers: new Map([["content-type", "application/json"]]),
         json: vi.fn().mockResolvedValue({
           jsonrpc: "2.0",
           id: 2,
@@ -258,6 +272,7 @@ describe("GraphitiBackend", () => {
 
       mockFetch.mockResolvedValueOnce({
         ok: true,
+        headers: new Map([["content-type", "application/json"]]),
         json: vi.fn().mockResolvedValue({
           jsonrpc: "2.0",
           id: 3,
@@ -363,6 +378,7 @@ describe("GraphitiBackend", () => {
 
       mockFetch.mockResolvedValueOnce({
         ok: true,
+        headers: new Map([["content-type", "application/json"]]),
         json: vi.fn().mockResolvedValue({
           jsonrpc: "2.0",
           id: 2,
@@ -394,6 +410,7 @@ describe("GraphitiBackend", () => {
 
       mockFetch.mockResolvedValueOnce({
         ok: true,
+        headers: new Map([["content-type", "application/json"]]),
         json: vi.fn().mockResolvedValue({
           jsonrpc: "2.0",
           id: 2,
@@ -432,6 +449,7 @@ describe("GraphitiBackend", () => {
 
       mockFetch.mockResolvedValueOnce({
         ok: true,
+        headers: new Map([["content-type", "application/json"]]),
         json: vi.fn().mockResolvedValue({
           jsonrpc: "2.0",
           id: 2,
