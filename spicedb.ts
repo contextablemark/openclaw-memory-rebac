@@ -44,7 +44,7 @@ export class SpiceDbClient {
       this.client = v1.NewClient(
         config.token,
         config.endpoint,
-        v1.ClientSecurity.INSECURE_LOCALHOST_ALLOWED,
+        v1.ClientSecurity.INSECURE_PLAINTEXT_CREDENTIALS,
       );
     } else {
       this.client = v1.NewClient(config.token, config.endpoint);

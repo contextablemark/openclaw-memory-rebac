@@ -1,115 +1,101 @@
 ###############################################################################
-# openclaw-memory-rebac — Graphiti backend stack
+# openclaw-memory-rebac — Graphiti FastAPI REST server stack (standalone)
 #
 # Services:
-#   falkordb    — graph database (FalkorDB, Redis-compatible)
-#   graphiti    — Graphiti MCP server (exposes /mcp over HTTP)
-#   spicedb-migrate — one-shot SpiceDB schema migration
-#   spicedb     — authorization engine (gRPC :50051, HTTP :8080)
-#   postgres    — SpiceDB backing store
+#   neo4j       — graph database
+#   graphiti    — Graphiti FastAPI REST server with extended config
 #
 # Usage:
-#   cp .env.example .env          # set SPICEDB_PRESHARED_KEY
+#   cp .env.example .env          # configure LLM, embedder, reranker
 #   docker compose up -d
 #
-# Graphiti endpoint:  http://localhost:8000
-# SpiceDB endpoint:   localhost:50051 (insecure)
+# Graphiti endpoint:  http://graphiti:8000 (internal to Docker network only)
+#
+# LLM Configuration:
+#   Each AI component (LLM, embedder, reranker) can point to a different
+#   service. See .env for all available configuration options.
 ###############################################################################
 
-name: openclaw-memory-rebac-graphiti
+name: openclaw-graphiti
 
 services:
 
   # ---------------------------------------------------------------------------
-  # FalkorDB — graph store for Graphiti
+  # Neo4j — graph store for Graphiti
   # ---------------------------------------------------------------------------
-  falkordb:
-    image: falkordb/falkordb:latest
+  neo4j:
+    image: neo4j:5.26.2
     restart: unless-stopped
-    ports:
-      - "6379:6379"
+    expose:
+      - "7687"
+      - "7474"
+    environment:
+      NEO4J_AUTH: ${NEO4J_USER:-neo4j}/${NEO4J_PASSWORD:-graphiti_pw}
     volumes:
-      - falkordb_data:/data
+      - neo4j_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      retries: 10
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:7474 || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 15
+      start_period: 30s
 
   # ---------------------------------------------------------------------------
-  # Graphiti MCP server
+  # Graphiti FastAPI REST server
   # ---------------------------------------------------------------------------
   graphiti:
-    image: zepai/graphiti:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
     restart: unless-stopped
-    ports:
-      - "8000:8000"
+    expose:
+      - "8000"
     environment:
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-none}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-none}
-      # Point to local Ollama if running; override with GRAPHITI_LLM_BASE_URL
-      GRAPHITI_LLM_BASE_URL: ${GRAPHITI_LLM_BASE_URL:-http://host.docker.internal:11434/v1}
-      GRAPHITI_LLM_MODEL: ${GRAPHITI_LLM_MODEL:-llama3.1:8b}
-      GRAPHITI_EMBEDDER_BASE_URL: ${GRAPHITI_EMBEDDER_BASE_URL:-http://host.docker.internal:11434/v1}
-      GRAPHITI_EMBEDDER_MODEL: ${GRAPHITI_EMBEDDER_MODEL:-nomic-embed-text}
-      NEO4J_URI: bolt://falkordb:6379
+      # -- Graph database (Neo4j) --
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USER: ${NEO4J_USER:-neo4j}
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-graphiti_pw}
+
+      # -- Graphiti concurrency --
+      # build_indices_and_constraints fires 29 index queries concurrently
+      # (default semaphore limit = 20). Neo4j can't handle that many
+      # concurrent DDL ops and drops connections. Serialize them.
+      SEMAPHORE_LIMIT: 3
+
+      # -- LLM (entity extraction) --
+      OPENAI_API_KEY: ${LLM_API_KEY:?Set LLM_API_KEY in .env}
+      OPENAI_BASE_URL: ${LLM_BASE_URL:-}
+      MODEL_NAME: ${LLM_MODEL:-gpt-4o-mini}
+
+      # -- Embedder --
+      EMBEDDING_MODEL_NAME: ${EMBEDDING_MODEL:-text-embedding-3-small}
+      EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-}
+      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
+      EMBEDDING_DIM: ${EMBEDDING_DIM:-}
+
+      # -- Reranker / cross-encoder --
+      # Default: "bge" runs BAAI/bge-reranker-v2-m3 locally (no API needed)
+      # Set to "openai" to use a remote reranker API instead
+      RERANKER_PROVIDER: ${RERANKER_PROVIDER:-bge}
+      RERANKER_MODEL: ${RERANKER_MODEL:-}
+      RERANKER_BASE_URL: ${RERANKER_BASE_URL:-}
+      RERANKER_API_KEY: ${RERANKER_API_KEY:-}
+
+      # -- Additional provider keys (optional) --
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
     depends_on:
-      falkordb:
+      neo4j:
         condition: service_healthy
     extra_hosts:
       - "host.docker.internal:host-gateway"
-
-  # ---------------------------------------------------------------------------
-  # PostgreSQL — SpiceDB backing store
-  # ---------------------------------------------------------------------------
-  postgres:
-    image: postgres:16-alpine
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: spicedb
-      POSTGRES_PASSWORD: spicedb
-      POSTGRES_DB: spicedb
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U spicedb"]
-      interval: 5s
-      retries: 10
-
-  # ---------------------------------------------------------------------------
-  # SpiceDB migration (one-shot)
-  # ---------------------------------------------------------------------------
-  spicedb-migrate:
-    image: authzed/spicedb:latest
-    command: migrate head
-    environment:
-      SPICEDB_DATASTORE_ENGINE: postgres
-      SPICEDB_DATASTORE_CONN_URI: "postgres://spicedb:spicedb@postgres:5432/spicedb?sslmode=disable"
-    depends_on:
-      postgres:
-        condition: service_healthy
-    restart: "no"
-
-  # ---------------------------------------------------------------------------
-  # SpiceDB — authorization engine
-  # ---------------------------------------------------------------------------
-  spicedb:
-    image: authzed/spicedb:latest
-    command: serve
-    restart: unless-stopped
-    ports:
-      - "50051:50051"   # gRPC (insecure, dev mode)
-      - "8080:8080"     # HTTP metrics / healthz
-    environment:
-      SPICEDB_GRPC_PRESHARED_KEY: ${SPICEDB_PRESHARED_KEY:-dev_token}
-      SPICEDB_DATASTORE_ENGINE: postgres
-      SPICEDB_DATASTORE_CONN_URI: "postgres://spicedb:spicedb@postgres:5432/spicedb?sslmode=disable"
-      SPICEDB_GRPC_NO_TLS: "true"
-    depends_on:
-      spicedb-migrate:
-        condition: service_completed_successfully
-      postgres:
-        condition: service_healthy
+      test: ["CMD", "curl", "-sf", "http://localhost:8000/healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
 
 volumes:
-  falkordb_data:
-  postgres_data:
+  neo4j_data:

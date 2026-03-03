@@ -1,0 +1,79 @@
+###############################################################################
+# openclaw-memory-rebac — SpiceDB authorization stack (standalone)
+#
+# Services:
+#   postgres        — SpiceDB backing store (PostgreSQL 16)
+#   spicedb-migrate — one-shot schema migration
+#   spicedb         — authorization engine (gRPC :50051, HTTP :8080)
+#
+# Usage:
+#   cp .env.example .env          # set SPICEDB_PRESHARED_KEY
+#   docker compose up -d
+#
+# SpiceDB endpoint:   localhost:50051 (insecure by default)
+###############################################################################
+
+name: openclaw-spicedb
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL — SpiceDB backing store
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: spicedb
+      POSTGRES_PASSWORD: ${SPICEDB_POSTGRES_PASSWORD:-spicedb}
+      POSTGRES_DB: spicedb
+    volumes:
+      - graphiti_spicedb_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U spicedb"]
+      interval: 5s
+      retries: 10
+
+  # ---------------------------------------------------------------------------
+  # SpiceDB migration (one-shot)
+  # ---------------------------------------------------------------------------
+  spicedb-migrate:
+    image: authzed/spicedb:latest
+    command: migrate head
+    environment:
+      SPICEDB_DATASTORE_ENGINE: postgres
+      SPICEDB_DATASTORE_CONN_URI: "postgres://spicedb:${SPICEDB_POSTGRES_PASSWORD:-spicedb}@postgres:5432/spicedb?sslmode=disable"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  # ---------------------------------------------------------------------------
+  # SpiceDB — authorization engine
+  # ---------------------------------------------------------------------------
+  spicedb:
+    image: authzed/spicedb:latest
+    command: serve
+    restart: unless-stopped
+    ports:
+      - "${SPICEDB_GRPC_PORT:-50051}:50051"   # gRPC
+      - "${SPICEDB_HTTP_PORT:-8080}:8080"      # HTTP metrics / healthz
+    environment:
+      SPICEDB_GRPC_PRESHARED_KEY: ${SPICEDB_PRESHARED_KEY:-dev_token}
+      SPICEDB_DATASTORE_ENGINE: postgres
+      SPICEDB_DATASTORE_CONN_URI: "postgres://spicedb:${SPICEDB_POSTGRES_PASSWORD:-spicedb}@postgres:5432/spicedb?sslmode=disable"
+      SPICEDB_GRPC_NO_TLS: "${SPICEDB_GRPC_NO_TLS:-true}"
+    depends_on:
+      spicedb-migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "grpc_health_probe", "-addr=localhost:50051"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  graphiti_spicedb_postgres_data:

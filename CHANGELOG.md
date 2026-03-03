@@ -5,21 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.0] - 2026-02-28
+## [0.1.0] - 2026-03-03
 
 ### Added
 
 - **Two-layer memory architecture**: SpiceDB for authorization, pluggable backend for storage
-- **Graphiti backend**: Knowledge graph storage via Graphiti MCP server (FalkorDB)
+- **Graphiti REST backend**: Knowledge graph storage via Graphiti FastAPI server (Neo4j)
+  - Direct REST API integration (replacing MCP transport)
   - Dual-mode search: nodes (entities) and facts (relationships) in parallel
   - Episode UUID polling with configurable interval and max attempts
-  - Backend-specific CLI commands (`episodes`)
+  - Configurable HTTP request timeout (`requestTimeoutMs`)
+  - Backend-specific CLI commands (`episodes`, `fact`, `clear-graph`)
+- **Custom Graphiti Docker image** (`docker/graphiti/`):
+  - `OpenClawGraphiti` subclass bypasses `ZepGraphiti` to properly forward embedder and cross_encoder params to the base `Graphiti` constructor
+  - Per-component LLM/embedder/reranker configuration via `ExtendedSettings`
+  - BGE reranker support (local sentence-transformers, no API needed)
+  - Singleton Graphiti client to avoid "Driver closed" errors in background tasks
+  - Neo4j connection retry with exponential backoff on startup
+  - Resilient AsyncWorker that logs and recovers from job failures instead of dying silently
+  - Attribute sanitization for Neo4j: flattens nested dicts/lists from LLM-extracted attributes on both entity nodes and edges
+  - Safe `extract_edges` wrapper for LLMs that return None for node indices
 - **SpiceDB authorization**: Relationship-based access control at the data layer
   - Authorization schema with `person`, `agent`, `group`, and `memory_fragment` types
   - Group-based access control with `member`, `access`, `contribute` permissions
   - Fragment-level permissions: `view` (involved + shared_by + group access), `delete` (shared_by only)
   - Auto-schema-write on first startup
   - Auto-membership for configured subject in default group
+- **SpiceDB Docker Compose** (`docker/spicedb/`): PostgreSQL-backed SpiceDB with migration
+- **Combined Docker Compose** (`docker/docker-compose.yml`): Single-command full stack startup
 - **MemoryBackend interface** (`backend.ts`): Defines the contract for pluggable storage engines
   - `store`, `searchGroup`, `enrichSession`, `getConversationHistory`
   - `healthCheck`, `getStatus`, `deleteGroup`, `listGroups`, `deleteFragment`
@@ -41,13 +54,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Config priority: env vars > JSON config file > defaults
 - **Environment variable interpolation**: `${VAR}` syntax in string config values
 - **Plugin manifest** (`openclaw.plugin.json`): Config schema with UI hints for OpenClaw plugin installer
-- **Docker Compose** (`docker/graphiti/`): FalkorDB + Graphiti MCP + PostgreSQL + SpiceDB
-- **Test suites**: Unit tests (vitest) + E2E tests (live services, `OPENCLAW_LIVE_TEST=1`)
-
-### Fixed
-
-- Fix 12 failing unit tests caused by mock/source drift in `graphiti.test.ts` and `index.test.ts`
-  - Add `headers` to tool-call mock responses to match `parseResponse()` content-type check
-  - Use `mockReset()` instead of `mockClear()` to prevent mock queue leaks between tests
-  - Mock `randomUUID` for deterministic episode name matching in store polling test
-  - Make CLI registration mock fully chainable to support `registerCommands()` subcommand creation
+- **Test suites**: 96 unit tests (vitest) + 15 E2E tests (live services, `OPENCLAW_LIVE_TEST=1`)

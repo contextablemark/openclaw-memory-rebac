@@ -5,7 +5,7 @@
     "backend": {
       "label": "Memory Backend",
       "placeholder": "graphiti",
-      "help": "Storage engine: 'graphiti' (MCP knowledge graph)"
+      "help": "Storage engine: 'graphiti' (REST knowledge graph)"
     },
     "spicedb.endpoint": {
       "label": "SpiceDB Endpoint",
@@ -23,9 +23,9 @@
       "help": "Allow insecure gRPC to localhost (dev mode)"
     },
     "graphiti.endpoint": {
-      "label": "Graphiti MCP Endpoint",
+      "label": "Graphiti Endpoint",
       "placeholder": "http://localhost:8000",
-      "help": "Graphiti MCP server HTTP base URL"
+      "help": "Graphiti REST server HTTP base URL"
     },
     "graphiti.defaultGroupId": {
       "label": "Graphiti Default Group ID",
@@ -42,6 +42,12 @@
       "label": "UUID Poll Max Attempts",
       "placeholder": "30",
       "help": "Max polling attempts; total timeout = interval × attempts (default: 30 = 90s)",
+      "advanced": true
+    },
+    "graphiti.requestTimeoutMs": {
+      "label": "Request Timeout (ms)",
+      "placeholder": "30000",
+      "help": "HTTP request timeout for Graphiti REST calls (default: 30000)",
       "advanced": true
     },
     "subjectType": {
@@ -76,15 +82,14 @@
   },
   "configSchema": {
     "type": "object",
-    "additionalProperties": false,
+    "additionalProperties": true,
     "properties": {
       "backend": {
-        "type": "string",
-        "enum": ["graphiti"]
+        "type": "string"
       },
       "spicedb": {
         "type": "object",
-        "additionalProperties": false,
+        "additionalProperties": true,
         "properties": {
           "endpoint": { "type": "string" },
           "token": { "type": "string" },
@@ -93,12 +98,13 @@
       },
       "graphiti": {
         "type": "object",
-        "additionalProperties": false,
+        "additionalProperties": true,
         "properties": {
           "endpoint": { "type": "string" },
           "defaultGroupId": { "type": "string" },
           "uuidPollIntervalMs": { "type": "integer", "minimum": 500, "maximum": 30000 },
-          "uuidPollMaxAttempts": { "type": "integer", "minimum": 1, "maximum": 200 }
+          "uuidPollMaxAttempts": { "type": "integer", "minimum": 1, "maximum": 200 },
+          "requestTimeoutMs": { "type": "integer", "minimum": 1000, "maximum": 300000 }
         }
       },
       "subjectType": { "type": "string", "enum": ["agent", "person"] },

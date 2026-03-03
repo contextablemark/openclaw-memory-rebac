@@ -59,7 +59,7 @@ describe("e2e: full stack integration", () => {
       endpoint: GRAPHITI_ENDPOINT,
       defaultGroupId: "e2e_test",
       uuidPollIntervalMs: 3000,
-      uuidPollMaxAttempts: 30,
+      uuidPollMaxAttempts: 60,
     });
 
     testSubject = { type: "agent", id: `e2e_test_${Date.now()}` };
@@ -150,7 +150,7 @@ describe("e2e: full stack integration", () => {
     // 7. Verify de-authorization
     const canDeleteAfter = await canDeleteFragment(spicedb, testSubject, fragmentId, deleteToken);
     expect(canDeleteAfter).toBe(false);
-  });
+  }, 600000);
 
   skipE2E("authorization prevents unauthorized access", async () => {
     const unauthorizedSubject: Subject = { type: "person", id: "unauthorized-person" };
@@ -278,7 +278,7 @@ Jordan: It's going well, just finished the mobile responsive layout.`;
     });
 
     expect(Array.isArray(searchResults)).toBe(true);
-  });
+  }, 600000);
 });
 
 describe("e2e: complex relationship extraction", () => {
@@ -308,7 +308,7 @@ describe("e2e: complex relationship extraction", () => {
     // Poll for processing completion - wait for Diana/ByteCraft content
     let results: Awaited<ReturnType<typeof backend.searchGroup>> = [];
     let foundRelevant = false;
-    const maxAttempts = 30;
+    const maxAttempts = 60;
     const pollInterval = 5000;
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
@@ -344,7 +344,7 @@ describe("e2e: complex relationship extraction", () => {
              (text.includes("bytecraft") || text.includes("principal") || text.includes("architecture") || text.includes("platform"));
     });
     expect(hasRelevantEntities).toBe(true);
-  }, 360000);
+  }, 600000);
 
   skipE2E("extract temporal references and work artifacts", async () => {
     // Complex: Temporal (Monday), Document (security audit), Event (submission)
@@ -366,7 +366,7 @@ describe("e2e: complex relationship extraction", () => {
     // Poll for Elena/security content
     let results: Awaited<ReturnType<typeof backend.searchGroup>> = [];
     let foundRelevant = false;
-    const maxAttempts = 30;
+    const maxAttempts = 60;
     const pollInterval = 5000;
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
@@ -399,7 +399,7 @@ describe("e2e: complex relationship extraction", () => {
              text.includes("monday") || text.includes("compliance") || text.includes("penetration");
     });
     expect(hasRelevantEntities).toBe(true);
-  }, 360000);
+  }, 600000);
 
   skipE2E("extract entities from multi-turn technical conversation", async () => {
     // Complex: Multi-turn dialogue with technical topics, multiple speakers
@@ -427,7 +427,7 @@ Raj Kumar: Yes, that makes sense. Let's bundle the Pinia upgrade with the Vue wo
     // Poll for Raj/Vue content
     let results: Awaited<ReturnType<typeof backend.searchGroup>> = [];
     let foundRelevant = false;
-    const maxAttempts = 30;
+    const maxAttempts = 60;
     const pollInterval = 5000;
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
@@ -469,7 +469,7 @@ Raj Kumar: Yes, that makes sense. Let's bundle the Pinia upgrade with the Vue wo
     if (hasTimeline) {
       console.log("  ✓ Timeline extraction detected");
     }
-  }, 360000);
+  }, 600000);
 });
 
 describe("e2e: backend-specific features", () => {

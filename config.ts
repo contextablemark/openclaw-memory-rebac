@@ -1,7 +1,7 @@
 /**
  * Unified configuration for openclaw-memory-rebac.
  *
- * backend: "graphiti" — Graphiti MCP knowledge graph
+ * backend: "graphiti" — Graphiti REST knowledge graph
  *
  * Backend-specific config lives under the graphiti key.
  */
@@ -40,7 +40,7 @@ const DEFAULT_SPICEDB_ENDPOINT = "localhost:50051";
 const DEFAULT_GRAPHITI_ENDPOINT = "http://localhost:8000";
 const DEFAULT_GROUP_ID = "main";
 const DEFAULT_UUID_POLL_INTERVAL_MS = 3000;
-const DEFAULT_UUID_POLL_MAX_ATTEMPTS = 30;
+const DEFAULT_UUID_POLL_MAX_ATTEMPTS = 60;
 const DEFAULT_SUBJECT_TYPE = "agent";
 const DEFAULT_MAX_CAPTURE_MESSAGES = 10;
 
@@ -104,7 +104,7 @@ export const rebacMemoryConfigSchema = {
     const graphitiRaw = (cfg.graphiti as Record<string, unknown>) ?? {};
     assertAllowedKeys(
       graphitiRaw,
-      ["endpoint", "defaultGroupId", "uuidPollIntervalMs", "uuidPollMaxAttempts"],
+      ["endpoint", "defaultGroupId", "uuidPollIntervalMs", "uuidPollMaxAttempts", "requestTimeoutMs"],
       "graphiti config",
     );
 
@@ -129,6 +129,10 @@ export const rebacMemoryConfigSchema = {
         typeof graphitiRaw.uuidPollMaxAttempts === "number" && graphitiRaw.uuidPollMaxAttempts > 0
           ? Math.round(graphitiRaw.uuidPollMaxAttempts)
           : DEFAULT_UUID_POLL_MAX_ATTEMPTS,
+      requestTimeoutMs:
+        typeof graphitiRaw.requestTimeoutMs === "number" && graphitiRaw.requestTimeoutMs > 0
+          ? graphitiRaw.requestTimeoutMs
+          : 30000,
     };
 
     return {
@@ -162,8 +166,7 @@ export const rebacMemoryConfigSchema = {
 
 /**
  * Instantiate the configured MemoryBackend from the parsed config.
- * Call this once during plugin registration — the returned backend is stateful
- * (session management, MCP connections, etc.).
+ * Call this once during plugin registration — the returned backend is stateful.
  */
 export function createBackend(cfg: RebacMemoryConfig): MemoryBackend {
   if (!cfg.graphiti) throw new Error("graphiti config is required");

@@ -1,0 +1,17 @@
+###############################################################################
+# openclaw-memory-rebac — Combined stack (Graphiti + SpiceDB)
+#
+# Brings up the full memory service stack in a single command:
+#   - Graphiti FastAPI REST server + Neo4j
+#   - SpiceDB authorization engine + PostgreSQL
+#
+# Usage:
+#   docker compose up -d
+#
+# Graphiti endpoint:  http://localhost:8000
+# SpiceDB endpoint:   localhost:50051 (insecure)
+###############################################################################
+
+include:
+  - path: ./spicedb/docker-compose.yml
+  - path: ./graphiti/docker-compose.yml
