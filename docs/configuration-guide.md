@@ -5,8 +5,8 @@ This guide walks through setting up openclaw-memory-rebac with the Graphiti back
 ## Quick Start
 
 ```bash
-# 1. Start infrastructure
-cd docker/graphiti
+# 1. Start full infrastructure (Graphiti + SpiceDB)
+cd docker
 docker compose up -d
 
 # 2. Verify services are healthy
@@ -25,52 +25,69 @@ Then add the plugin to your OpenClaw config (`~/.openclaw/openclaw.json`) and re
 
 ### Docker Compose (Recommended)
 
-The `docker/graphiti/docker-compose.yml` starts all required services:
+The `docker/docker-compose.yml` orchestrates the full stack via two sub-stacks:
+
+**Graphiti stack** (`docker/graphiti/`):
 
 | Service | Port | Purpose |
 |---------|------|---------|
-| **FalkorDB** | 6379 | Graph database for Graphiti (Redis-compatible) |
-| **FalkorDB UI** | 3000 | Browser-based graph explorer |
-| **Graphiti MCP** | 8000 | Knowledge graph API (HTTP + SSE) |
+| **Neo4j** | 7687 | Graph database (Bolt protocol) |
+| **Neo4j Browser** | 7474 | Browser-based graph explorer |
+| **Graphiti** | 8000 | Custom FastAPI REST server |
+
+**SpiceDB stack** (`docker/spicedb/`):
+
+| Service | Port | Purpose |
+|---------|------|---------|
 | **PostgreSQL** | 5432 | SpiceDB backing store |
 | **SpiceDB** | 50051 | Authorization engine (gRPC) |
 | **SpiceDB** | 8080 | Health/metrics endpoint |
 
 ```bash
-cd docker/graphiti
+# Start everything
+cd docker
 docker compose up -d
+
+# Or start stacks independently
+cd docker/graphiti && docker compose up -d
+cd docker/spicedb && docker compose up -d
 ```
 
 SpiceDB migrations run automatically via the `spicedb-migrate` service.
 
 ### Environment Variables (Docker)
 
-Create a `.env` file in `docker/graphiti/` to configure the stack:
+Create a `.env` file in `docker/graphiti/` to configure the Graphiti stack:
 
 ```bash
-# SpiceDB pre-shared key (used by both SpiceDB and the plugin)
-SPICEDB_PRESHARED_KEY=dev_token
-
 # LLM for Graphiti's entity extraction
-# Default: host.docker.internal:11434 (local Ollama)
-GRAPHITI_LLM_BASE_URL=http://host.docker.internal:11434/v1
-GRAPHITI_LLM_MODEL=qwen2.5:14b
+OPENAI_API_KEY=none                                      # Required by base image; "none" for Ollama
+OPENAI_BASE_URL=http://host.docker.internal:11434/v1     # LLM endpoint
+MODEL_NAME=qwen2.5:14b                                   # LLM model
 
 # Embeddings for Graphiti's vector search
-GRAPHITI_EMBEDDER_BASE_URL=http://host.docker.internal:11434/v1
-GRAPHITI_EMBEDDER_MODEL=nomic-embed-text
+EMBEDDING_BASE_URL=http://host.docker.internal:11434/v1  # Embedder endpoint
+EMBEDDING_MODEL_NAME=nomic-embed-text                    # Embedding model
+EMBEDDING_DIM=768                                        # Embedding dimensions
 
-# OpenAI API key (required by Graphiti image, but can be "none" if using Ollama)
-OPENAI_API_KEY=none
+# Reranker (default: BGE local model, no API needed)
+RERANKER_PROVIDER=bge                                    # "bge" (local) or "openai" (remote)
+
+# Neo4j
+NEO4J_URI=bolt://neo4j:7687
+NEO4J_USER=neo4j
+NEO4J_PASSWORD=graphiti-password
 ```
+
+The custom Docker image (`docker/graphiti/Dockerfile`) extends `zepai/graphiti:latest` with `ExtendedSettings` that reads these environment variables for per-component configuration. This is critical for local-model setups where the LLM, embedder, and reranker may all use different endpoints and models.
 
 #### Using a Remote GPU Server
 
 If your LLM and embeddings run on a remote GPU server (e.g., Ollama on a separate machine):
 
 ```bash
-GRAPHITI_LLM_BASE_URL=http://192.168.1.100:11434/v1
-GRAPHITI_EMBEDDER_BASE_URL=http://192.168.1.100:11434/v1
+OPENAI_BASE_URL=http://192.168.1.100:11434/v1
+EMBEDDING_BASE_URL=http://192.168.1.100:11434/v1
 ```
 
 The Graphiti container uses `extra_hosts: host.docker.internal:host-gateway` by default, so `host.docker.internal` resolves to the Docker host. For remote servers, use the IP directly.
@@ -79,8 +96,8 @@ The Graphiti container uses `extra_hosts: host.docker.internal:host-gateway` by 
 
 If you prefer to run services outside Docker:
 
-1. **FalkorDB**: `docker run -p 6379:6379 falkordb/falkordb:latest`
-2. **Graphiti**: See [Graphiti docs](https://github.com/getzep/graphiti) — set `NEO4J_URI=bolt://localhost:6379`
+1. **Neo4j**: `docker run -p 7687:7687 -p 7474:7474 neo4j:5.26.2` (pin to 5.26.2 — later versions cause IncompleteCommit errors)
+2. **Graphiti**: Build the custom image from `docker/graphiti/Dockerfile`, or run the base `zepai/graphiti` image with the overlay files
 3. **PostgreSQL**: Any PostgreSQL 14+ instance
 4. **SpiceDB**: See [SpiceDB docs](https://authzed.com/docs/spicedb/getting-started)
 
@@ -152,10 +169,11 @@ Add the plugin to your OpenClaw configuration:
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `endpoint` | string | `"http://localhost:8000"` | Graphiti MCP server URL |
+| `endpoint` | string | `"http://localhost:8000"` | Graphiti REST server URL |
 | `defaultGroupId` | string | `"main"` | Default group for memory storage |
 | `uuidPollIntervalMs` | integer | `3000` | How often to poll for episode UUID (ms) |
-| `uuidPollMaxAttempts` | integer | `30` | Max polls before giving up (timeout = interval x attempts) |
+| `uuidPollMaxAttempts` | integer | `60` | Max polls before giving up (timeout = interval x attempts) |
+| `requestTimeoutMs` | integer | `30000` | HTTP request timeout for REST calls (ms) |
 
 ### Default Extraction Instructions
 
@@ -272,35 +290,56 @@ For development, `dev_token` is fine. For production:
 
 ### LLM and Embedding Configuration
 
-Graphiti's LLM and embedding configuration is set via the Docker Compose environment, not the plugin config. The plugin only controls the Graphiti endpoint URL.
+Graphiti's LLM and embedding configuration is set via Docker environment variables on the Graphiti container, not the plugin config. The plugin only controls the Graphiti endpoint URL.
 
-**Graphiti MCP server** reads its own config from environment variables or its `config.yaml`:
+Our custom Docker image uses `ExtendedSettings` to support per-component configuration:
 
 | Variable | Purpose | Example |
 |----------|---------|---------|
-| `GRAPHITI_LLM_BASE_URL` | LLM endpoint | `http://gpu-server:11434/v1` |
-| `GRAPHITI_LLM_MODEL` | LLM model | `qwen2.5:14b` |
-| `GRAPHITI_EMBEDDER_BASE_URL` | Embedding endpoint | `http://gpu-server:11434/v1` |
-| `GRAPHITI_EMBEDDER_MODEL` | Embedding model | `nomic-embed-text` |
+| `OPENAI_BASE_URL` | LLM endpoint | `http://gpu-server:11434/v1` |
+| `MODEL_NAME` | LLM model | `qwen2.5:14b` |
+| `EMBEDDING_BASE_URL` | Embedding endpoint (defaults to `OPENAI_BASE_URL`) | `http://gpu-server:11434/v1` |
+| `EMBEDDING_MODEL_NAME` | Embedding model | `nomic-embed-text` |
+| `EMBEDDING_DIM` | Embedding dimensions | `768` |
+| `RERANKER_PROVIDER` | `bge` (local) or `openai` (remote) | `bge` |
+| `RERANKER_MODEL` | Remote reranker model (ignored for BGE) | — |
+| `RERANKER_BASE_URL` | Remote reranker endpoint (ignored for BGE) | — |
 
-GPU-accelerated embeddings are strongly recommended. Graphiti runs ~300 embedding calls per episode — on CPU this can take 15+ minutes; on GPU it completes in under 60 seconds. See [The Graphiti Redemption](graphiti-gpu-redemption.md) for benchmarks.
+GPU-accelerated embeddings are strongly recommended. Graphiti runs ~300 embedding calls per episode — on CPU this can take 15+ minutes; on GPU it completes in under 60 seconds.
 
 ### UUID Polling
 
 When Graphiti processes an episode, entity extraction is asynchronous. The plugin polls for the resulting episode UUID so it can register the memory fragment in SpiceDB.
 
 - **`uuidPollIntervalMs`** (default: 3000) — polling interval in milliseconds
-- **`uuidPollMaxAttempts`** (default: 30) — max polls before giving up
+- **`uuidPollMaxAttempts`** (default: 60) — max polls before giving up
 
-Total timeout = `interval × attempts` = 3000ms × 30 = **90 seconds** by default.
+Total timeout = `interval × attempts` = 3000ms × 60 = **180 seconds** by default.
 
 If your LLM is slow (CPU embeddings, large models), increase `uuidPollMaxAttempts`. If your LLM is fast (GPU, small models), you can decrease `uuidPollIntervalMs` for snappier SpiceDB registration.
 
-### FalkorDB
+### Neo4j
 
-FalkorDB uses the Redis protocol on port 6379. The Graphiti MCP server connects to it via `NEO4J_URI=bolt://falkordb:6379` (inside Docker) or `bolt://localhost:6379` (outside Docker).
+Neo4j runs on port 7687 (Bolt protocol). The Graphiti container connects via `NEO4J_URI=bolt://neo4j:7687` (inside Docker) or `bolt://localhost:7687` (outside Docker).
 
-The web UI is available at `http://localhost:3000` for browsing the knowledge graph visually.
+The Neo4j browser is available at `http://localhost:7474` for browsing the knowledge graph visually.
+
+**Important**: Pin Neo4j to version `5.26.2`. Later versions cause `IncompleteCommit` errors during concurrent DDL operations.
+
+### Custom Docker Image
+
+The custom Graphiti image (`docker/graphiti/Dockerfile`) extends `zepai/graphiti:latest` with several runtime patches applied in `startup.py`. These patches address issues that surface when running Graphiti with local models (Ollama) rather than OpenAI:
+
+| Patch | Problem | Fix |
+|-------|---------|-----|
+| **OpenClawGraphiti** | `ZepGraphiti.__init__` drops `embedder` and `cross_encoder` params | Subclass base `Graphiti` directly, forwarding all params |
+| **Singleton client** | Upstream creates/closes a client per-request; background AsyncWorker outlives request scope | Process-lifetime singleton via `dependency_overrides` |
+| **Startup retry** | Neo4j not ready when Graphiti starts | Exponential backoff retry for `build_indices_and_constraints()` |
+| **Resilient AsyncWorker** | Upstream worker only catches `CancelledError`; any other exception kills it silently | Catch all exceptions, log, and continue processing |
+| **Attribute sanitization** | Local LLMs return nested dicts/lists in entity attributes; Neo4j rejects non-primitive property values | Flatten to JSON strings before Neo4j write for both entity nodes and edges |
+| **Safe extract_edges** | Local LLMs sometimes return `None` for node indices | Catch `TypeError`, log warning, return empty list |
+
+These are runtime monkey-patches applied via `importlib` — they depend on upstream's internal module structure and may need updating when the base image changes.
 
 ## Standalone CLI
 
@@ -387,7 +426,7 @@ Or via environment variable: `SPICEDB_TOKEN=dev_token`
 ### Graphiti connection refused
 
 1. Verify Graphiti is running: `curl http://localhost:8000/health`
-2. Check FalkorDB is healthy — Graphiti won't start without it
+2. Check Neo4j is healthy — Graphiti won't start without it
 3. Check Graphiti logs: `docker compose logs graphiti`
 
 ### Slow episode processing (15+ minutes)
@@ -395,7 +434,7 @@ Or via environment variable: `SPICEDB_TOKEN=dev_token`
 Graphiti runs ~300 LLM and embedding calls per episode. If processing is very slow:
 
 1. **Check if embeddings are on CPU** — this is the most common cause
-2. Move embeddings to GPU: set `GRAPHITI_EMBEDDER_BASE_URL` to a GPU-accelerated Ollama instance
+2. Move embeddings to GPU: set `EMBEDDING_BASE_URL` to a GPU-accelerated Ollama instance
 3. Expected processing times with GPU: 20-60 seconds per episode
 
 ### UUID polling timeout
@@ -405,6 +444,16 @@ If you see "UUID poll max attempts exceeded":
 1. The LLM may be too slow — check Graphiti logs for processing times
 2. Increase `graphiti.uuidPollMaxAttempts` (e.g., 60 for a 3-minute timeout)
 3. Or increase `graphiti.uuidPollIntervalMs` if you're overwhelming the server with polls
+
+### Neo4j "Property values can only be of primitive types"
+
+If you see `GqlError` mentioning `MAP` or `LIST` types:
+
+1. This means the attribute sanitization patch isn't running — likely a Docker image issue
+2. Rebuild the custom image: `cd docker/graphiti && docker compose build --no-cache`
+3. Restart with: `docker compose up -d --force-recreate`
+
+The custom startup.py flattens nested LLM-extracted attributes to JSON strings before they reach Neo4j. This is necessary because local LLMs (unlike OpenAI) sometimes return nested objects in entity/edge attributes.
 
 ### Auto-recall returns no memories
 

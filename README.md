@@ -40,11 +40,13 @@ This means you can change your storage engine without touching authorization, an
 
 ### Graphiti (default)
 
-[Graphiti](https://github.com/getzep/graphiti) builds a knowledge graph from conversations. It extracts entities, facts, and relationships, storing them in a graph database (FalkorDB) for structured retrieval.
+[Graphiti](https://github.com/getzep/graphiti) builds a knowledge graph from conversations. It extracts entities, facts, and relationships, storing them in Neo4j for structured retrieval.
 
-- **Storage**: FalkorDB (Redis-compatible graph database)
+- **Storage**: Neo4j graph database
+- **Transport**: Direct REST API to Graphiti FastAPI server
 - **Extraction**: LLM-powered entity and relationship extraction (~300 embedding calls per episode)
 - **Search**: Dual-mode — searches both nodes (entities) and facts (relationships) in parallel
+- **Docker image**: Custom image (`docker/graphiti/`) with per-component LLM/embedder/reranker configuration, BGE reranker support, and runtime patches for local-model compatibility
 - **Best for**: Rich entity-relationship extraction, structured knowledge
 
 ## Installation
@@ -71,15 +73,15 @@ Then restart the gateway. On first start, the plugin automatically:
 ### 1. Start Infrastructure
 
 ```bash
-cd docker/graphiti
-cp .env.example .env
-# Edit .env — set your LLM endpoint and API key
+cd docker
+cp graphiti/.env.example graphiti/.env
+# Edit graphiti/.env — set your LLM endpoint and API key
 docker compose up -d
 ```
 
-This starts:
-- **FalkorDB** on port 6379 (graph database, web UI on port 3000)
-- **Graphiti MCP Server** on port 8000 (knowledge graph API)
+This starts the full stack:
+- **Neo4j** on port 7687 (graph database, browser on port 7474)
+- **Graphiti** on port 8000 (FastAPI REST server)
 - **PostgreSQL** on port 5432 (persistent datastore for SpiceDB)
 - **SpiceDB** on port 50051 (authorization engine)
 
@@ -219,10 +221,11 @@ Session groups (`session-<id>`) provide per-conversation memory isolation:
 | `spicedb.endpoint` | string | `localhost:50051` | SpiceDB gRPC endpoint |
 | `spicedb.token` | string | *required* | SpiceDB pre-shared key (supports `${ENV_VAR}`) |
 | `spicedb.insecure` | boolean | `true` | Allow insecure gRPC (for localhost dev) |
-| `graphiti.endpoint` | string | `http://localhost:8000` | Graphiti MCP server URL |
+| `graphiti.endpoint` | string | `http://localhost:8000` | Graphiti REST server URL |
 | `graphiti.defaultGroupId` | string | `main` | Default group for memory storage |
 | `graphiti.uuidPollIntervalMs` | integer | `3000` | Polling interval for resolving episode UUIDs (ms) |
-| `graphiti.uuidPollMaxAttempts` | integer | `30` | Max polling attempts (total timeout = interval x attempts) |
+| `graphiti.uuidPollMaxAttempts` | integer | `60` | Max polling attempts (total timeout = interval x attempts) |
+| `graphiti.requestTimeoutMs` | integer | `30000` | HTTP request timeout for Graphiti REST calls (ms) |
 | `subjectType` | string | `agent` | SpiceDB subject type (`agent` or `person`) |
 | `subjectId` | string | `default` | SpiceDB subject ID (supports `${ENV_VAR}`) |
 | `autoCapture` | boolean | `true` | Auto-capture conversations |
@@ -276,6 +279,8 @@ Backend-specific commands (Graphiti):
 | Command | Description |
 |---------|-------------|
 | `rebac-mem episodes` | List recent episodes. Options: `--last`, `--group` |
+| `rebac-mem fact <uuid>` | Show details of a specific fact (entity edge) |
+| `rebac-mem clear-graph <group-id>` | Delete all data in a group |
 
 ### Standalone CLI
 
@@ -369,20 +374,43 @@ rebac-mem import --include-sessions
 
 ## Docker Compose
 
-The `docker/graphiti/` directory contains a full-stack Docker Compose configuration:
+The `docker/` directory contains a modular Docker Compose stack. The top-level `docker/docker-compose.yml` includes both sub-stacks:
+
+```bash
+# Start the full stack (Graphiti + SpiceDB)
+cd docker
+docker compose up -d
+```
+
+### Graphiti Stack (`docker/graphiti/`)
 
 | Service | Port | Description |
 |---------|------|-------------|
-| `falkordb` | 6379, 3000 | Graph database (Redis protocol) + web UI |
-| `graphiti-mcp` | 8000 | Graphiti MCP server (HTTP/SSE) |
-| `postgres` | 5432 | Persistent datastore for SpiceDB |
+| `neo4j` | 7687, 7474 | Graph database (Bolt protocol) + browser UI |
+| `graphiti` | 8000 | Custom Graphiti FastAPI server (REST) |
+
+The custom Docker image extends `zepai/graphiti:latest` with:
+- **`OpenClawGraphiti`** — subclass of base `Graphiti` (bypasses `ZepGraphiti` to properly forward embedder/cross_encoder)
+- **`ExtendedSettings`** — per-component LLM, embedder, and reranker configuration
+- **BGE reranker** — local sentence-transformers model (no API needed)
+- **Runtime patches** — singleton client lifecycle, Neo4j attribute sanitization, resilient AsyncWorker, startup retry with backoff
+
+### SpiceDB Stack (`docker/spicedb/`)
+
+| Service | Port | Description |
+|---------|------|-------------|
+| `postgres` | 5432 | SpiceDB backing store (PostgreSQL 16) |
 | `spicedb-migrate` | — | One-shot: runs SpiceDB DB migrations |
-| `spicedb` | 50051, 8443, 9090 | Authorization engine (gRPC, HTTP, metrics) |
+| `spicedb` | 50051, 8080 | Authorization engine (gRPC, HTTP health) |
+
+### Running Stacks Independently
 
 ```bash
-# Start infrastructure
-cd docker/graphiti
-docker compose up -d
+# Graphiti only
+cd docker/graphiti && docker compose up -d
+
+# SpiceDB only
+cd docker/spicedb && docker compose up -d
 ```
 
 ## Development
@@ -411,15 +439,22 @@ OPENCLAW_LIVE_TEST=1 npm run test:e2e
 ├── openclaw.plugin.json      # Plugin manifest
 ├── package.json
 ├── backends/
-│   └── graphiti.ts           # Graphiti MCP backend implementation
+│   └── graphiti.ts           # Graphiti REST backend implementation
 ├── bin/
 │   └── rebac-mem.ts          # Standalone CLI entry point
 ├── docker/
-│   └── graphiti/
-│       ├── docker-compose.yml
-│       └── .env.example
-├── *.test.ts                 # Unit tests
-├── e2e.test.ts               # End-to-end tests (live services)
+│   ├── docker-compose.yml    # Combined stack (includes both sub-stacks)
+│   ├── graphiti/
+│   │   ├── docker-compose.yml
+│   │   ├── Dockerfile        # Custom Graphiti image with patches
+│   │   ├── config_overlay.py # ExtendedSettings (per-component config)
+│   │   ├── graphiti_overlay.py # OpenClawGraphiti class
+│   │   ├── startup.py        # Runtime patches and uvicorn launch
+│   │   └── .env.example
+│   └── spicedb/
+│       └── docker-compose.yml
+├── *.test.ts                 # Unit tests (96)
+├── e2e.test.ts               # End-to-end tests (15, live services)
 ├── vitest.config.ts          # Unit test config
 └── vitest.e2e.config.ts      # E2E test config
 ```
