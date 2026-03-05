@@ -1,8 +1,8 @@
 /**
  * Backend registry — loaded dynamically from backends.json.
  *
- * Uses top-level await (ESM) so all backends are fully imported by the time
- * any consumer calls createBackend(). No backend names appear in this file.
+ * Call initRegistry() once (e.g. at the start of register()) before using
+ * backendRegistry or createBackend(). No backend names appear in this file.
  *
  * To add a new backend:
  *   1. Create backends/<name>.ts  (exports `defaults` and `create`)
@@ -19,12 +19,18 @@ export type BackendModule = {
   defaults: Record<string, unknown>;
 };
 
-const loaded: Record<string, BackendModule> = {};
-for (const [name, modulePath] of Object.entries(backendsJson as Record<string, string>)) {
-  const url = new URL(modulePath, import.meta.url);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const mod = await import(url.href) as any;
-  loaded[name] = mod as BackendModule;
+// Mutable backing store — populated by initRegistry().
+// backendRegistry is a live reference to the same object.
+const _registry: Record<string, BackendModule> = {};
+
+export async function initRegistry(): Promise<void> {
+  if (Object.keys(_registry).length > 0) return;
+  for (const [name, modulePath] of Object.entries(backendsJson as Record<string, string>)) {
+    const url = new URL(modulePath, import.meta.url);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const mod = await import(url.href) as any;
+    _registry[name] = mod as BackendModule;
+  }
 }
 
-export const backendRegistry: Readonly<Record<string, BackendModule>> = loaded;
+export const backendRegistry: Readonly<Record<string, BackendModule>> = _registry;

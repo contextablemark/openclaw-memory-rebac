@@ -1,6 +1,9 @@
-import { describe, test, expect } from "vitest";
+import { describe, test, expect, beforeAll } from "vitest";
 import { rebacMemoryConfigSchema, createBackend, defaultGroupId } from "./config.js";
 import { GraphitiBackend } from "./backends/graphiti.js";
+import { initRegistry } from "./backends/registry.js";
+
+beforeAll(async () => { await initRegistry(); });
 
 describe("rebacMemoryConfigSchema", () => {
   test("parses minimal config with defaults", () => {
