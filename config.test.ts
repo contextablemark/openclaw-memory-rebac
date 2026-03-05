@@ -16,7 +16,7 @@ describe("rebacMemoryConfigSchema", () => {
   test("parses backend=graphiti", () => {
     const cfg = rebacMemoryConfigSchema.parse({ backend: "graphiti" });
     expect(cfg.backend).toBe("graphiti");
-    expect(cfg.graphiti?.endpoint).toBe("http://localhost:8000");
+    expect(cfg.backendConfig["endpoint"]).toBe("http://localhost:8000");
   });
 
   test("accepts graphiti sub-config", () => {
@@ -29,10 +29,10 @@ describe("rebacMemoryConfigSchema", () => {
         uuidPollMaxAttempts: 50,
       },
     });
-    expect(cfg.graphiti?.endpoint).toBe("http://graphiti:9000");
-    expect(cfg.graphiti?.defaultGroupId).toBe("team-x");
-    expect(cfg.graphiti?.uuidPollIntervalMs).toBe(5000);
-    expect(cfg.graphiti?.uuidPollMaxAttempts).toBe(50);
+    expect(cfg.backendConfig["endpoint"]).toBe("http://graphiti:9000");
+    expect(cfg.backendConfig["defaultGroupId"]).toBe("team-x");
+    expect(cfg.backendConfig["uuidPollIntervalMs"]).toBe(5000);
+    expect(cfg.backendConfig["uuidPollMaxAttempts"]).toBe(50);
   });
 
   test("accepts spicedb config", () => {
@@ -82,11 +82,16 @@ describe("rebacMemoryConfigSchema", () => {
     expect(cfg.subjectType).toBe("agent");
   });
 
-  test("accepts custom instructions", () => {
+  test("accepts graphiti custom instructions", () => {
     const cfg = rebacMemoryConfigSchema.parse({
-      customInstructions: "Extract only technical details",
+      graphiti: { customInstructions: "Extract only technical details" },
     });
-    expect(cfg.customInstructions).toBe("Extract only technical details");
+    expect(cfg.backendConfig["customInstructions"]).toBe("Extract only technical details");
+  });
+
+  test("defaults graphiti customInstructions to empty string", () => {
+    const cfg = rebacMemoryConfigSchema.parse({});
+    expect(cfg.backendConfig["customInstructions"]).toBe("");
   });
 
   test("accepts maxCaptureMessages", () => {
@@ -138,16 +143,16 @@ describe("createBackend", () => {
     expect(backend).toBeInstanceOf(GraphitiBackend);
   });
 
-  test("throws when graphiti config missing for backend=graphiti", () => {
+  test("throws when backendConfig missing for backend=graphiti", () => {
     const cfg = rebacMemoryConfigSchema.parse({ backend: "graphiti" });
-    // Config has default graphiti, but let's override it
-    cfg.graphiti = undefined;
-    expect(() => createBackend(cfg)).toThrow("graphiti config is required");
+    // Simulate missing backendConfig by using an unregistered backend name
+    const badCfg = { ...cfg, backend: "nonexistent" };
+    expect(() => createBackend(badCfg)).toThrow(`Unknown backend: "nonexistent"`);
   });
 });
 
 describe("defaultGroupId", () => {
-  test("returns graphiti defaultGroupId when backend=graphiti", () => {
+  test("returns backendConfig defaultGroupId when backend=graphiti", () => {
     const cfg = rebacMemoryConfigSchema.parse({
       backend: "graphiti",
       graphiti: { defaultGroupId: "graphiti-group" },
@@ -155,9 +160,9 @@ describe("defaultGroupId", () => {
     expect(defaultGroupId(cfg)).toBe("graphiti-group");
   });
 
-  test("falls back to 'main' when graphiti defaultGroupId missing", () => {
+  test("falls back to 'main' when backendConfig defaultGroupId missing", () => {
     const cfg = rebacMemoryConfigSchema.parse({ backend: "graphiti" });
-    cfg.graphiti = { ...cfg.graphiti!, defaultGroupId: undefined as unknown as string };
-    expect(defaultGroupId(cfg)).toBe("main");
+    const modded = { ...cfg, backendConfig: { ...cfg.backendConfig, defaultGroupId: undefined } };
+    expect(defaultGroupId(modded)).toBe("main");
   });
 });

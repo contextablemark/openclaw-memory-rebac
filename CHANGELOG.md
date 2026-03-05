@@ -55,3 +55,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Environment variable interpolation**: `${VAR}` syntax in string config values
 - **Plugin manifest** (`openclaw.plugin.json`): Config schema with UI hints for OpenClaw plugin installer
 - **Test suites**: 96 unit tests (vitest) + 15 E2E tests (live services, `OPENCLAW_LIVE_TEST=1`)
+- **Drop-in backend registry** (`backends/backends.json`, `backends/registry.ts`): JSON-driven dynamic backend loading — adding a new storage backend requires only a new module, a defaults JSON file, and one line in `backends.json`. No TypeScript changes to any existing file.
+  - `backends/backends.json` is the single source of truth for backend names; no backend name strings appear in `config.ts` or `index.ts`
+  - Top-level `await` in `registry.ts` loads all backends at module init time so `createBackend()` stays synchronous
+  - Backend-specific config defaults live entirely in `backends/<name>.defaults.json`
+  - `RebacMemoryConfig.backendConfig` (generic `Record<string, unknown>`) replaces the typed per-backend field

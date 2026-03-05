@@ -123,18 +123,18 @@ function createMockContext(backend: MemoryBackend, spicedb: SpiceDbClient): CliC
     cfg: {
       backend: "graphiti",
       spicedb: { endpoint: "localhost:50051", token: "test-token", insecure: true },
-      graphiti: {
+      backendConfig: {
         endpoint: "http://localhost:8000",
         defaultGroupId: "main",
         uuidPollIntervalMs: 3000,
         uuidPollMaxAttempts: 30,
+        customInstructions: "Extract facts",
       },
       subjectType: "agent" as const,
       subjectId: "test-agent",
       autoCapture: true,
       autoRecall: true,
       maxCaptureMessages: 10,
-      customInstructions: "Extract facts",
     },
     currentSubject: { type: "agent", id: "test-agent" },
     getLastWriteToken: vi.fn().mockReturnValue("last-token"),

@@ -295,7 +295,7 @@ const rebacMemoryPlugin = {
             content,
             groupId: targetGroupId,
             sourceDescription: source_description,
-            customPrompt: cfg.customInstructions,
+            customPrompt: (cfg.backendConfig["customInstructions"] as string) ?? "",
           });
 
           // Chain SpiceDB write to the fragmentId Promise — fires when backend has a stable UUID
@@ -595,7 +595,7 @@ const rebacMemoryPlugin = {
             content: episodeBody,
             groupId: targetGroupId,
             sourceDescription: "auto-captured conversation",
-            customPrompt: cfg.customInstructions,
+            customPrompt: (cfg.backendConfig["customInstructions"] as string) ?? "",
           });
 
           // Chain SpiceDB write

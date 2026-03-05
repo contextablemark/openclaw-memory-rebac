@@ -82,6 +82,7 @@ export type GraphitiConfig = {
   uuidPollIntervalMs: number;
   uuidPollMaxAttempts: number;
   requestTimeoutMs?: number;
+  customInstructions: string;
 };
 
 export class GraphitiBackend implements MemoryBackend {
@@ -329,4 +330,16 @@ export class GraphitiBackend implements MemoryBackend {
         }
       });
   }
+}
+
+// ============================================================================
+// Backend module exports (used by backends/registry.ts)
+// ============================================================================
+
+import graphitiDefaults from "./graphiti.defaults.json" with { type: "json" };
+
+export const defaults: Record<string, unknown> = graphitiDefaults;
+
+export function create(config: Record<string, unknown>): MemoryBackend {
+  return new GraphitiBackend(config as GraphitiConfig);
 }

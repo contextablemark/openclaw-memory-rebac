@@ -60,6 +60,7 @@ describe("e2e: full stack integration", () => {
       defaultGroupId: "e2e_test",
       uuidPollIntervalMs: 3000,
       uuidPollMaxAttempts: 60,
+      customInstructions: "",
     });
 
     testSubject = { type: "agent", id: `e2e_test_${Date.now()}` };
@@ -226,12 +227,11 @@ describe("e2e: full stack integration", () => {
       cfg: {
         backend: "graphiti" as const,
         spicedb: { endpoint: SPICEDB_ENDPOINT, token: SPICEDB_TOKEN, insecure: true },
-        graphiti: { endpoint: GRAPHITI_ENDPOINT, defaultGroupId: "main", uuidPollIntervalMs: 3000, uuidPollMaxAttempts: 30 },
+        backendConfig: { endpoint: GRAPHITI_ENDPOINT, defaultGroupId: "main", uuidPollIntervalMs: 3000, uuidPollMaxAttempts: 30, customInstructions: "" },
         subjectType: "agent" as const,
         subjectId: "test",
         autoCapture: true,
         autoRecall: true,
-        customInstructions: "",
         maxCaptureMessages: 10,
       },
       currentSubject: testSubject,

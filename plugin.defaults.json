@@ -1,0 +1,12 @@
+{
+  "backend": "graphiti",
+  "spicedb": {
+    "endpoint": "localhost:50051",
+    "insecure": true
+  },
+  "subjectType": "agent",
+  "subjectId": "default",
+  "autoCapture": true,
+  "autoRecall": true,
+  "maxCaptureMessages": 10
+}
