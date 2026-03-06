@@ -27,11 +27,15 @@
     "spicedb.ts",
     "backends/",
     "openclaw.plugin.json",
+    "plugin.defaults.json",
     "schema.zed",
     "docker/",
     "scripts/",
     "bin/"
   ],
+  "peerDependencies": {
+    "openclaw": "*"
+  },
   "scripts": {
     "cli": "tsx bin/rebac-mem.ts",
     "typecheck": "tsc --noEmit 2>&1 | grep -v '../openclaw/' | grep -c 'error TS' | xargs -I{} test {} -eq 0",

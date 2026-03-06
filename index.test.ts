@@ -124,7 +124,7 @@ describe("openclaw-memory-rebac plugin", () => {
 
   test("registers 4 tools: memory_recall, memory_store, memory_forget, memory_status", async () => {
     const plugin = await import("./index.js");
-    plugin.default.register(mockApi);
+    await plugin.default.register(mockApi);
 
     expect(registeredTools).toHaveLength(4);
     expect(registeredTools.map((t) => t.name)).toEqual([
@@ -137,14 +137,14 @@ describe("openclaw-memory-rebac plugin", () => {
 
   test("registers CLI handler", async () => {
     const plugin = await import("./index.js");
-    plugin.default.register(mockApi);
+    await plugin.default.register(mockApi);
 
     expect(registeredClis).toHaveLength(1);
   });
 
   test("registers service", async () => {
     const plugin = await import("./index.js");
-    plugin.default.register(mockApi);
+    await plugin.default.register(mockApi);
 
     expect(registeredServices).toHaveLength(1);
     expect(registeredServices[0].id).toBe("openclaw-memory-rebac");
@@ -152,7 +152,7 @@ describe("openclaw-memory-rebac plugin", () => {
 
   test("logs backend selection on registration", async () => {
     const plugin = await import("./index.js");
-    plugin.default.register(mockApi);
+    await plugin.default.register(mockApi);
 
     expect(logs.some(log => log.includes("backend: graphiti"))).toBe(true);
   });
@@ -167,19 +167,19 @@ describe("openclaw-memory-rebac plugin", () => {
       },
     };
 
-    expect(() => plugin.default.register(badApi)).toThrow("spicedb.token is not configured");
+    await expect(plugin.default.register(badApi)).rejects.toThrow("spicedb.token is not configured");
   });
 
   test("creates GraphitiBackend when backend=graphiti", async () => {
     const plugin = await import("./index.js");
-    plugin.default.register(mockApi);
+    await plugin.default.register(mockApi);
 
     expect(logs.some(log => log.includes("backend: graphiti"))).toBe(true);
   });
 
   test("memory_recall tool has correct parameters", async () => {
     const plugin = await import("./index.js");
-    plugin.default.register(mockApi);
+    await plugin.default.register(mockApi);
 
     const recallTool = registeredTools.find((t) => t.name === "memory_recall");
     expect(recallTool).toBeDefined();
@@ -191,7 +191,7 @@ describe("openclaw-memory-rebac plugin", () => {
 
   test("memory_store tool has correct parameters", async () => {
     const plugin = await import("./index.js");
-    plugin.default.register(mockApi);
+    await plugin.default.register(mockApi);
 
     const storeTool = registeredTools.find((t) => t.name === "memory_store");
     expect(storeTool).toBeDefined();
@@ -205,7 +205,7 @@ describe("openclaw-memory-rebac plugin", () => {
 
   test("memory_forget tool has correct parameters", async () => {
     const plugin = await import("./index.js");
-    plugin.default.register(mockApi);
+    await plugin.default.register(mockApi);
 
     const forgetTool = registeredTools.find((t) => t.name === "memory_forget");
     expect(forgetTool).toBeDefined();
@@ -215,7 +215,7 @@ describe("openclaw-memory-rebac plugin", () => {
 
   test("memory_status tool has empty parameters", async () => {
     const plugin = await import("./index.js");
-    plugin.default.register(mockApi);
+    await plugin.default.register(mockApi);
 
     const statusTool = registeredTools.find((t) => t.name === "memory_status");
     expect(statusTool).toBeDefined();
@@ -225,14 +225,14 @@ describe("openclaw-memory-rebac plugin", () => {
 
   test("registers before_agent_start hook when autoRecall=true", async () => {
     const plugin = await import("./index.js");
-    plugin.default.register(mockApi);
+    await plugin.default.register(mockApi);
 
     expect(mockApi.on).toHaveBeenCalledWith("before_agent_start", expect.any(Function));
   });
 
   test("registers agent_end hook when autoCapture=true", async () => {
     const plugin = await import("./index.js");
-    plugin.default.register(mockApi);
+    await plugin.default.register(mockApi);
 
     expect(mockApi.on).toHaveBeenCalledWith("agent_end", expect.any(Function));
   });
@@ -277,7 +277,7 @@ describe("openclaw-memory-rebac plugin", () => {
     mockClient.promises.readSchema = vi.fn().mockResolvedValue({ schemaText: "" });
 
     const plugin = await import("./index.js");
-    plugin.default.register(mockApi);
+    await plugin.default.register(mockApi);
 
     const service = registeredServices[0];
     await service.start();
@@ -296,7 +296,7 @@ describe("openclaw-memory-rebac plugin", () => {
     mockClient.promises.writeSchema = vi.fn();
 
     const plugin = await import("./index.js");
-    plugin.default.register(mockApi);
+    await plugin.default.register(mockApi);
 
     const service = registeredServices[0];
     await service.start();
@@ -309,7 +309,7 @@ describe("openclaw-memory-rebac plugin", () => {
     const mockClient = v1.NewClient();
 
     const plugin = await import("./index.js");
-    plugin.default.register(mockApi);
+    await plugin.default.register(mockApi);
 
     const service = registeredServices[0];
     await service.start();
@@ -319,7 +319,7 @@ describe("openclaw-memory-rebac plugin", () => {
 
   test("CLI registration calls backend-agnostic registerCommands", async () => {
     const plugin = await import("./index.js");
-    plugin.default.register(mockApi);
+    await plugin.default.register(mockApi);
 
     const cliHandler = registeredClis[0];
     const mockCmd: Record<string, ReturnType<typeof vi.fn>> = {};

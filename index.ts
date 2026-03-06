@@ -20,6 +20,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { rebacMemoryConfigSchema, createBackend, defaultGroupId } from "./config.js";
+import { initRegistry } from "./backends/registry.js";
 import { SpiceDbClient } from "./spicedb.js";
 import {
   lookupAuthorizedGroups,
@@ -61,7 +62,8 @@ const rebacMemoryPlugin = {
   kind: "memory" as const,
   configSchema: rebacMemoryConfigSchema,
 
-  register(api: OpenClawPluginApi) {
+  async register(api: OpenClawPluginApi) {
+    await initRegistry();
     const cfg = rebacMemoryConfigSchema.parse(api.pluginConfig);
 
     if (!cfg.spicedb.token) {

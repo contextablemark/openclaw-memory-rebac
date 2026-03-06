@@ -151,12 +151,52 @@ def patch():
     # -- Fix TypeError in extract_edges when LLM returns None for node indices --
     # graphiti-core does `if not (-1 < source_idx < len(nodes) and -1 < target_idx < len(nodes))`
     # which crashes with TypeError if the LLM returns None for an index.
-    # Patch extract_edges to skip edges with None indices instead of crashing.
+    #
+    # Primary fix: filter bad edges at model-parse level so valid edges from the same
+    # episode are preserved. Only applies when the Edge model has int fields (old
+    # index-based validation); a no-op for newer name-based validation.
+    # Fallback: catch TypeError from the whole function (loses all edges for that episode).
     edge_ops_mod = importlib.import_module(
         "graphiti_core.utils.maintenance.edge_operations"
     )
     original_extract_edges = edge_ops_mod.extract_edges
 
+    try:
+        _ep_mod = importlib.import_module("graphiti_core.prompts.extract_edges")
+        _OrigExtractedEdges = _ep_mod.ExtractedEdges
+        _OrigEdge = _ep_mod.Edge
+
+        # Collect Optional[int] fields (present in old index-based Edge model)
+        _int_fields = []
+        for _fname, _finfo in _OrigEdge.model_fields.items():
+            _ann = _finfo.annotation
+            if _ann is int:
+                _int_fields.append(_fname)
+            elif hasattr(_ann, "__args__") and int in _ann.__args__:
+                _int_fields.append(_fname)
+
+        if _int_fields:
+            _orig_mv = _OrigExtractedEdges.model_validate
+
+            @classmethod  # type: ignore[misc]
+            def _filtered_model_validate(cls, obj, *a, **kw):
+                result = _orig_mv.__func__(cls, obj, *a, **kw)
+                if result.edges:
+                    valid = [e for e in result.edges if all(getattr(e, f) is not None for f in _int_fields)]
+                    dropped = len(result.edges) - len(valid)
+                    if dropped:
+                        logger.warning("extract_edges: filtered %d edge(s) with None index fields", dropped)
+                    result.edges = valid
+                return result
+
+            _OrigExtractedEdges.model_validate = _filtered_model_validate
+            logger.info("Patched ExtractedEdges.model_validate to filter None int fields: %s", _int_fields)
+        else:
+            logger.info("ExtractedEdges uses name-based validation — None-index filter not needed")
+    except Exception as _patch_err:
+        logger.warning("Could not patch ExtractedEdges for None-index filtering: %s", _patch_err)
+
+    # Fallback: catch any remaining TypeError from the whole function
     async def safe_extract_edges(*args, **kwargs):
         try:
             return await original_extract_edges(*args, **kwargs)
