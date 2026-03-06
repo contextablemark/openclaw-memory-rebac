@@ -57,6 +57,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Test suites**: 96 unit tests (vitest) + 15 E2E tests (live services, `OPENCLAW_LIVE_TEST=1`)
 - **Drop-in backend registry** (`backends/backends.json`, `backends/registry.ts`): JSON-driven dynamic backend loading — adding a new storage backend requires only a new module, a defaults JSON file, and one line in `backends.json`. No TypeScript changes to any existing file.
   - `backends/backends.json` is the single source of truth for backend names; no backend name strings appear in `config.ts` or `index.ts`
-  - Top-level `await` in `registry.ts` loads all backends at module init time so `createBackend()` stays synchronous
   - Backend-specific config defaults live entirely in `backends/<name>.defaults.json`
   - `RebacMemoryConfig.backendConfig` (generic `Record<string, unknown>`) replaces the typed per-backend field
+
+### Fixed
+
+- **Plugin load failure**: Replaced top-level `await` in `registry.ts` with an explicit `initRegistry()` async function called from `register()` — the OpenClaw plugin loader does not support top-level `await` in ESM modules
+- **npm publishing**: Added `plugin.defaults.json` to `files` (it is imported at runtime by `config.ts` but was missing from the published package), added `peerDependencies: { openclaw: "*" }`, added `peerDependencies` declaration
+- **`extract_edges` None-index crash** (Docker image): Improved patch in `startup.py` to filter bad edges at model-parse level so valid edges from the same episode are preserved; falls back to per-function TypeError catch for newer graphiti-core versions that use name-based validation
