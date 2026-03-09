@@ -137,25 +137,6 @@ def patch():
         for edge in entity_edges:
             if edge.attributes:
                 edge.attributes = _sanitize_attributes(edge.attributes)
-            # DIAGNOSTIC: log edges with missing/invalid embeddings
-            emb = edge.fact_embedding
-            emb_ok = isinstance(emb, list) and len(emb) > 0 and all(isinstance(x, (int, float)) for x in emb[:5])
-            if not emb_ok:
-                logger.warning(
-                    "DIAG bad_embedding: edge=%s name=%r type=%s len=%s "
-                    "sample=%r fact=%r attrs_keys=%s src=%s tgt=%s",
-                    edge.uuid, edge.name,
-                    type(emb).__name__, len(emb) if isinstance(emb, (list, tuple)) else 'N/A',
-                    emb[:3] if isinstance(emb, list) else emb,
-                    edge.fact[:200] if edge.fact else None,
-                    list((edge.attributes or {}).keys()),
-                    edge.source_node_uuid, edge.target_node_uuid,
-                )
-            if edge.attributes and 'fact_embedding' in edge.attributes:
-                logger.warning(
-                    "DIAG attributes_clobber: edge=%s has 'fact_embedding' in attributes! "
-                    "value_type=%s", edge.uuid, type(edge.attributes.get('fact_embedding'))
-                )
         return await original_bulk_add(
             driver, episodic_nodes, episodic_edges,
             entity_nodes, entity_edges, embedder,
