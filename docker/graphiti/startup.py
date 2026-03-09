@@ -117,12 +117,27 @@ def patch():
     bulk_mod = importlib.import_module("graphiti_core.utils.bulk_utils")
     original_bulk_add = bulk_mod.add_nodes_and_edges_bulk
 
-    def _sanitize_attributes(attrs):
-        """Flatten non-primitive attribute values to JSON strings for Neo4j."""
+    # Reserved keys that must not be overwritten by LLM-extracted attributes.
+    # See: https://github.com/contextablemark/openclaw-memory-rebac/issues/6
+    RESERVED_EDGE_KEYS = {
+        'uuid', 'source_node_uuid', 'target_node_uuid', 'name',
+        'fact', 'fact_embedding', 'group_id', 'episodes',
+        'created_at', 'expired_at', 'valid_at', 'invalid_at',
+    }
+    RESERVED_NODE_KEYS = {
+        'uuid', 'name', 'name_embedding', 'group_id', 'summary',
+        'created_at', 'labels',
+    }
+
+    def _sanitize_attributes(attrs, reserved_keys):
+        """Flatten non-primitive values and strip reserved keys to prevent clobber."""
         if not attrs:
             return attrs
         sanitized = {}
         for k, v in attrs.items():
+            if k in reserved_keys:
+                logger.debug("Stripped reserved key %r from attributes", k)
+                continue
             if isinstance(v, (dict, list, set, tuple)):
                 sanitized[k] = json.dumps(v, default=str)
             else:
@@ -133,10 +148,18 @@ def patch():
                                 entity_nodes, entity_edges, embedder):
         for node in entity_nodes:
             if node.attributes:
-                node.attributes = _sanitize_attributes(node.attributes)
+                node.attributes = _sanitize_attributes(node.attributes, RESERVED_NODE_KEYS)
         for edge in entity_edges:
+            # DIAGNOSTIC: log clobber attempts BEFORE stripping (so we can
+            # verify the fix is catching them).  Keep until confirmed in prod.
+            if edge.attributes and 'fact_embedding' in edge.attributes:
+                logger.warning(
+                    "DIAG attributes_clobber: edge=%s has 'fact_embedding' in attributes! "
+                    "value_type=%s (will be stripped)", edge.uuid,
+                    type(edge.attributes.get('fact_embedding')),
+                )
             if edge.attributes:
-                edge.attributes = _sanitize_attributes(edge.attributes)
+                edge.attributes = _sanitize_attributes(edge.attributes, RESERVED_EDGE_KEYS)
             # DIAGNOSTIC: log edges with missing/invalid embeddings
             emb = edge.fact_embedding
             emb_ok = isinstance(emb, list) and len(emb) > 0 and all(isinstance(x, (int, float)) for x in emb[:5])
@@ -150,11 +173,6 @@ def patch():
                     edge.fact[:200] if edge.fact else None,
                     list((edge.attributes or {}).keys()),
                     edge.source_node_uuid, edge.target_node_uuid,
-                )
-            if edge.attributes and 'fact_embedding' in edge.attributes:
-                logger.warning(
-                    "DIAG attributes_clobber: edge=%s has 'fact_embedding' in attributes! "
-                    "value_type=%s", edge.uuid, type(edge.attributes.get('fact_embedding'))
                 )
         return await original_bulk_add(
             driver, episodic_nodes, episodic_edges,
