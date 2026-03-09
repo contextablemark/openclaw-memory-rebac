@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Groq JSON mode 400 errors**: Added `JsonSafeLLMClient` wrapper in `graphiti_overlay.py` that injects "Respond in JSON format." into system messages when `response_format=json_object` is set but no message mentions "json" — required by Groq and some other OpenAI-compatible providers
+- **Graphiti port not accessible from host**: Changed `expose` to `ports` in `docker/graphiti/docker-compose.yml` so port 8000 is reachable from outside the Docker network
+
+### Added
+
+- **Embedding diagnostic logging**: Warnings in `startup.py` for edges with missing/invalid `fact_embedding` and for `fact_embedding` appearing in edge attributes (potential clobbering bug)
+
 ## [0.1.0] - 2026-03-03
 
 ### Added
