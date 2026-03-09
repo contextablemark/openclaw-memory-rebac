@@ -86,6 +86,23 @@ def patch():
 
     app.dependency_overrides[original_get_graphiti] = patched_get_graphiti
 
+    # -- Endpoint: entity edges extracted from a specific episode --
+    # graphiti-core stores an `episodes` list on each RELATES_TO relationship
+    # tracking which episodes contributed to that fact.  This endpoint exposes
+    # those UUIDs so the plugin can write per-fact SpiceDB relationships.
+    @app.get("/episodes/{episode_uuid}/edges")
+    async def get_episode_edges(episode_uuid: str):
+        """Return entity edge UUIDs that reference a specific episode."""
+        query = (
+            "MATCH ()-[r:RELATES_TO]-() "
+            "WHERE $episode_uuid IN r.episodes "
+            "RETURN DISTINCT r.uuid AS uuid"
+        )
+        records, _, _ = await singleton_client.driver.execute_query(
+            query, {"episode_uuid": episode_uuid}
+        )
+        return [{"uuid": r["uuid"]} for r in records]
+
     # -- Fix upstream AsyncWorker crash-on-error bug --
     # The worker loop only catches CancelledError; any other exception from
     # add_episode() kills the worker silently and no more jobs are processed.

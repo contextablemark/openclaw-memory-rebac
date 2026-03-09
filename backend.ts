@@ -162,6 +162,14 @@ export interface MemoryBackend {
    */
   deleteFragment?(uuid: string): Promise<boolean>;
 
+  /**
+   * Discover fragment (fact/edge) UUIDs that were extracted from a stored episode.
+   * Called after store() resolves the episode ID to write per-fragment SpiceDB
+   * relationships with the correct fact-level UUIDs.
+   * Optional: not all backends separate episodes from fragments.
+   */
+  discoverFragmentIds?(episodeId: string): Promise<string[]>;
+
   // --------------------------------------------------------------------------
   // CLI extension point
   // --------------------------------------------------------------------------

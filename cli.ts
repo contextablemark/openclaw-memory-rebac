@@ -411,6 +411,104 @@ export function registerCommands(cmd: Command, ctx: CliContext): void {
     });
 
   // --------------------------------------------------------------------------
+  // backfill-relationships — retroactively write per-fact SpiceDB relationships
+  // --------------------------------------------------------------------------
+
+  if (backend.discoverFragmentIds) {
+    cmd
+      .command("backfill-relationships")
+      .description("Retroactively write per-fact SpiceDB relationships for existing episodes")
+      .option("--group <id...>", "Group ID(s) to backfill (default: all authorized groups)")
+      .option("--last <n>", "Number of episodes per group to process", "100")
+      .option("--dry-run", "Show what would be written without writing", false)
+      .action(async (opts: { group?: string[]; last: string; dryRun: boolean }) => {
+        const lastN = parseInt(opts.last);
+        let groups: string[];
+        if (opts.group && opts.group.length > 0) {
+          groups = opts.group;
+        } else {
+          groups = await lookupAuthorizedGroups(spicedb, currentSubject, getLastWriteToken());
+          if (groups.length === 0) {
+            console.log("No authorized groups found.");
+            return;
+          }
+        }
+
+        console.log(`Backfilling per-fact SpiceDB relationships for ${groups.length} group(s)...`);
+        const tuples: import("./spicedb.js").RelationshipTuple[] = [];
+        let totalEpisodes = 0;
+        let totalFacts = 0;
+
+        for (const groupId of groups) {
+          let episodes: Array<{ uuid: string; name: string }>;
+          try {
+            // getEpisodes is Graphiti-specific but we already checked discoverFragmentIds
+            episodes = await (backend as any).getEpisodes(groupId, lastN);
+          } catch {
+            console.log(`  Skipping group ${groupId} (failed to list episodes)`);
+            continue;
+          }
+
+          console.log(`  Group "${groupId}": ${episodes.length} episode(s)`);
+          for (const ep of episodes) {
+            const factIds = await backend.discoverFragmentIds!(ep.uuid);
+            if (factIds.length === 0) continue;
+
+            totalEpisodes++;
+            totalFacts += factIds.length;
+
+            for (const factId of factIds) {
+              tuples.push(
+                {
+                  resourceType: "memory_fragment",
+                  resourceId: factId,
+                  relation: "source_group",
+                  subjectType: "group",
+                  subjectId: groupId,
+                },
+                {
+                  resourceType: "memory_fragment",
+                  resourceId: factId,
+                  relation: "shared_by",
+                  subjectType: currentSubject.type,
+                  subjectId: currentSubject.id,
+                },
+              );
+            }
+
+            if (!opts.dryRun && factIds.length > 0) {
+              process.stdout.write(".");
+            }
+          }
+        }
+
+        if (!opts.dryRun && totalFacts > 0) {
+          console.log(); // newline after dots
+        }
+
+        console.log(`\nDiscovered ${totalFacts} fact(s) across ${totalEpisodes} episode(s).`);
+
+        if (opts.dryRun) {
+          console.log(`[dry-run] Would write ${tuples.length} SpiceDB relationships.`);
+          return;
+        }
+
+        if (tuples.length === 0) {
+          console.log("No relationships to write.");
+          return;
+        }
+
+        console.log(`Writing ${tuples.length} SpiceDB relationships...`);
+        try {
+          const count = await spicedb.bulkImportRelationships(tuples);
+          console.log(`Done: ${count} relationships written.`);
+        } catch (err) {
+          console.error(`SpiceDB bulk import failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      });
+  }
+
+  // --------------------------------------------------------------------------
   // Backend-specific extension point
   // --------------------------------------------------------------------------
 

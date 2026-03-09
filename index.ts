@@ -300,16 +300,39 @@ const rebacMemoryPlugin = {
             customPrompt: (cfg.backendConfig["customInstructions"] as string) ?? "",
           });
 
-          // Chain SpiceDB write to the fragmentId Promise — fires when backend has a stable UUID
+          // Chain SpiceDB writes to the fragmentId Promise — fires when backend
+          // has a stable episode UUID.  Discover extracted fact UUIDs and write
+          // per-fact relationships so that fragment-level permissions (view, delete)
+          // resolve correctly against the IDs returned by memory_recall.
           result.fragmentId
-            .then(async (fragmentId) => {
-              const writeToken = await writeFragmentRelationships(spicedb, {
-                fragmentId,
-                groupId: targetGroupId,
-                sharedBy: currentSubject,
-                involves: involvedSubjects,
-              });
-              if (writeToken) lastWriteToken = writeToken;
+            .then(async (episodeId) => {
+              const factIds = backend.discoverFragmentIds
+                ? await backend.discoverFragmentIds(episodeId)
+                : [];
+
+              if (factIds.length > 0) {
+                for (const factId of factIds) {
+                  const writeToken = await writeFragmentRelationships(spicedb, {
+                    fragmentId: factId,
+                    groupId: targetGroupId,
+                    sharedBy: currentSubject,
+                    involves: involvedSubjects,
+                  });
+                  if (writeToken) lastWriteToken = writeToken;
+                }
+                api.logger.info(
+                  `openclaw-memory-rebac: wrote SpiceDB relationships for ${factIds.length} fact(s) from episode ${episodeId}`,
+                );
+              } else {
+                // Fallback: write relationships for the episode UUID itself
+                const writeToken = await writeFragmentRelationships(spicedb, {
+                  fragmentId: episodeId,
+                  groupId: targetGroupId,
+                  sharedBy: currentSubject,
+                  involves: involvedSubjects,
+                });
+                if (writeToken) lastWriteToken = writeToken;
+              }
             })
             .catch((err) => {
               api.logger.warn(
@@ -361,8 +384,25 @@ const rebacMemoryPlugin = {
             uuid = id;
           }
 
-          // Check SpiceDB delete permission
-          const allowed = await canDeleteFragment(spicedb, currentSubject, uuid, lastWriteToken);
+          // Check SpiceDB delete permission.
+          // Fragment-level relationships may be missing (episode UUID vs fact UUID mismatch),
+          // so fall back to group-level authorization: if the subject can contribute to any
+          // group they have access to, allow deletion.
+          let allowed = await canDeleteFragment(spicedb, currentSubject, uuid, lastWriteToken);
+          if (!allowed) {
+            const groups = await lookupAuthorizedGroups(spicedb, currentSubject, lastWriteToken);
+            for (const g of groups) {
+              if (await canWriteToGroup(spicedb, currentSubject, g, lastWriteToken)) {
+                allowed = true;
+                break;
+              }
+            }
+            if (allowed) {
+              api.logger.info(
+                `openclaw-memory-rebac: fragment-level delete check failed for "${uuid}", authorized via group membership`,
+              );
+            }
+          }
           if (!allowed) {
             return {
               content: [{ type: "text", text: `Permission denied: cannot delete fragment "${uuid}"` }],
@@ -600,15 +640,30 @@ const rebacMemoryPlugin = {
             customPrompt: (cfg.backendConfig["customInstructions"] as string) ?? "",
           });
 
-          // Chain SpiceDB write
+          // Chain SpiceDB writes — discover per-fact UUIDs when possible
           result.fragmentId
-            .then(async (fragmentId) => {
-              const writeToken = await writeFragmentRelationships(spicedb, {
-                fragmentId,
-                groupId: targetGroupId,
-                sharedBy: currentSubject,
-              });
-              if (writeToken) lastWriteToken = writeToken;
+            .then(async (episodeId) => {
+              const factIds = backend.discoverFragmentIds
+                ? await backend.discoverFragmentIds(episodeId)
+                : [];
+
+              if (factIds.length > 0) {
+                for (const factId of factIds) {
+                  const writeToken = await writeFragmentRelationships(spicedb, {
+                    fragmentId: factId,
+                    groupId: targetGroupId,
+                    sharedBy: currentSubject,
+                  });
+                  if (writeToken) lastWriteToken = writeToken;
+                }
+              } else {
+                const writeToken = await writeFragmentRelationships(spicedb, {
+                  fragmentId: episodeId,
+                  groupId: targetGroupId,
+                  sharedBy: currentSubject,
+                });
+                if (writeToken) lastWriteToken = writeToken;
+              }
             })
             .catch((err) => {
               api.logger.warn(

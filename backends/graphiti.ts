@@ -273,6 +273,14 @@ export class GraphitiBackend implements MemoryBackend {
     );
   }
 
+  async discoverFragmentIds(episodeId: string): Promise<string[]> {
+    const edges = await this.restCall<Array<{ uuid: string }>>(
+      "GET",
+      `/episodes/${encodeURIComponent(episodeId)}/edges`,
+    );
+    return edges.map((e) => e.uuid);
+  }
+
   async getEntityEdge(uuid: string): Promise<FactResult> {
     return this.restCall<FactResult>(
       "GET",
