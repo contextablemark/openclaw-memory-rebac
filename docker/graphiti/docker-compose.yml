@@ -48,8 +48,8 @@ services:
       context: .
       dockerfile: Dockerfile
     restart: unless-stopped
-    expose:
-      - "8000"
+    ports:
+      - "8000:8000"
     environment:
       # -- Graph database (Neo4j) --
       NEO4J_URI: bolt://neo4j:7687
