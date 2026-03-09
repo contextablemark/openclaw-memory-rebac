@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Embedding clobber from LLM-extracted attributes** (Docker image): `_sanitize_attributes` in `startup.py` now strips reserved keys (`fact_embedding`, `uuid`, `source_node_uuid`, `target_node_uuid`, `name_embedding`, `group_id`, etc.) from LLM-extracted attributes before they are merged via `dict.update()` in graphiti-core's `add_nodes_and_edges_bulk_tx`. Previously, models like `llama-3.3-70b-versatile` (Groq) would include `fact_embedding` as an attribute key, overwriting the valid Voyage AI embedding vector with a string and causing `setRelationshipVectorProperty` failures in Neo4j. ([#6](https://github.com/contextablemark/openclaw-memory-rebac/issues/6))
+
 ## [0.1.0] - 2026-03-03
 
 ### Added
