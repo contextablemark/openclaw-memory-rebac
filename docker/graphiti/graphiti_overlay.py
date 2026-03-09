@@ -98,6 +98,31 @@ def _create_reranker(settings: ExtendedSettings, llm_client):
     return BGERerankerClient()
 
 
+class JsonSafeLLMClient(OpenAIGenericClient):
+    """Wrapper that ensures 'json' appears in messages when response_format is json_object.
+
+    Groq (and some other providers) require the word 'json' in the messages
+    when response_format={"type": "json_object"} is used. Graphiti's internal
+    prompts don't always include it, causing 400 errors.
+    """
+
+    async def _generate_response(self, messages, response_model=None, **kwargs):
+        # Check if any message already contains the word 'json' (case-insensitive)
+        has_json_mention = any('json' in m.content.lower() for m in messages)
+        if not has_json_mention:
+            # Inject into the first system message, or prepend one
+            injected = False
+            for m in messages:
+                if m.role == 'system':
+                    m.content += '\nRespond in JSON format.'
+                    injected = True
+                    break
+            if not injected:
+                from graphiti_core.prompts.models import Message
+                messages.insert(0, Message(role='system', content='Respond in JSON format.'))
+        return await super()._generate_response(messages, response_model, **kwargs)
+
+
 def create_graphiti(settings: ExtendedSettings) -> OpenClawGraphiti:
     """Create an OpenClawGraphiti instance with per-component client configuration."""
 
@@ -109,7 +134,7 @@ def create_graphiti(settings: ExtendedSettings) -> OpenClawGraphiti:
     if settings.model_name:
         llm_config.model = settings.model_name
         llm_config.small_model = settings.model_name
-    llm_client = OpenAIGenericClient(config=llm_config)
+    llm_client = JsonSafeLLMClient(config=llm_config)
 
     # -- Embedder --
     embedder_api_key = settings.embedding_api_key or settings.openai_api_key
