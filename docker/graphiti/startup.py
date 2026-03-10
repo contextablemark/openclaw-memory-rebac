@@ -98,8 +98,11 @@ def patch():
             "WHERE $episode_uuid IN r.episodes "
             "RETURN DISTINCT r.uuid AS uuid"
         )
-        records, _, _ = await singleton_client.driver.execute_query(
-            query, params={"episode_uuid": episode_uuid}
+        # Use the raw Neo4j async driver directly to avoid differences
+        # in the Graphiti Neo4jDriver.execute_query() wrapper across versions.
+        raw_driver = singleton_client.driver.client
+        records, _, _ = await raw_driver.execute_query(
+            query, parameters_={"episode_uuid": episode_uuid}
         )
         return [{"uuid": r["uuid"]} for r in records]
 
