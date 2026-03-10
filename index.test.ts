@@ -167,7 +167,7 @@ describe("openclaw-memory-rebac plugin", () => {
       },
     };
 
-    await expect(plugin.default.register(badApi)).rejects.toThrow("spicedb.token is not configured");
+    expect(() => plugin.default.register(badApi)).toThrow("spicedb.token is not configured");
   });
 
   test("creates GraphitiBackend when backend=graphiti", async () => {

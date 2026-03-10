@@ -7,7 +7,8 @@ OpenClaw two-layer memory plugin: SpiceDB ReBAC authorization + pluggable storag
 ## Key commands
 
 ```bash
-npm test              # Unit tests (96 tests, no services needed)
+npm run build         # Compile TS to dist/ (also copies JSON defaults)
+npm test              # Unit tests (102 tests, no services needed)
 npm run test:e2e      # E2E tests (15 tests, requires live SpiceDB + Graphiti)
 npm run typecheck     # TypeScript type checking
 npm run cli -- <cmd>  # CLI: status, search, groups, episodes, etc.
@@ -20,7 +21,7 @@ E2E tests require `OPENCLAW_LIVE_TEST=1` (set automatically by `test:e2e` script
 - `index.ts` — Plugin entry point, registers tools with OpenClaw
 - `config.ts` — Config parsing with env var interpolation (`${VAR}`)
 - `backend.ts` — `MemoryBackend` interface for pluggable storage
-- `backends/registry.ts` — JSON-driven dynamic backend loading from `backends/backends.json`
+- `backends/registry.ts` — Static backend registry (add new backends here)
 - `authorization.ts` — SpiceDB relationship-based access control
 - `search.ts` — Backend-agnostic parallel group search
 - `spicedb.ts` — SpiceDB gRPC client wrapper
@@ -29,7 +30,7 @@ E2E tests require `OPENCLAW_LIVE_TEST=1` (set automatically by `test:e2e` script
 
 ## Backend extensibility
 
-New backends require only: a module in `backends/`, a `.defaults.json` file, and one line in `backends/backends.json`. No changes to `config.ts` or `index.ts`.
+New backends require: a module in `backends/`, a `.defaults.json` file, and a static import + entry in `backends/registry.ts`.
 
 ## Docker stack (`docker/`)
 
@@ -43,6 +44,6 @@ Use PR branches for changes — don't push directly to main.
 
 ## Known patterns
 
-- `register()` in `index.ts` must await `initRegistry()` before parsing config (no top-level await in ESM plugin loader)
+- `register()` in `index.ts` should be synchronous to avoid the OpenClaw "async registration" warning; backend registry uses static imports instead of dynamic `import()`
 - Groq and some OpenAI-compatible providers require the word "json" in messages when using `response_format=json_object` — handled by `JsonSafeLLMClient` wrapper in `graphiti_overlay.py`
 - Edge `fact_embedding` can be clobbered by LLM-extracted attributes — diagnostic logging in `startup.py` watches for this
