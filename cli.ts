@@ -488,19 +488,28 @@ export function registerCommands(cmd: Command, ctx: CliContext): void {
 
         console.log(`\nDiscovered ${totalFacts} fact(s) across ${totalEpisodes} episode(s).`);
 
+        // Deduplicate: the same edge can appear in multiple episodes
+        const seen = new Set<string>();
+        const unique = tuples.filter((t) => {
+          const key = `${t.resourceType}:${t.resourceId}#${t.relation}@${t.subjectType}:${t.subjectId}`;
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+
         if (opts.dryRun) {
-          console.log(`[dry-run] Would write ${tuples.length} SpiceDB relationships.`);
+          console.log(`[dry-run] Would write ${unique.length} SpiceDB relationships (${tuples.length - unique.length} duplicates removed).`);
           return;
         }
 
-        if (tuples.length === 0) {
+        if (unique.length === 0) {
           console.log("No relationships to write.");
           return;
         }
 
-        console.log(`Writing ${tuples.length} SpiceDB relationships...`);
+        console.log(`Writing ${unique.length} SpiceDB relationships (${tuples.length - unique.length} duplicates removed)...`);
         try {
-          const count = await spicedb.bulkImportRelationships(tuples);
+          const count = await spicedb.bulkImportRelationships(unique);
           console.log(`Done: ${count} relationships written.`);
         } catch (err) {
           console.error(`SpiceDB bulk import failed: ${err instanceof Error ? err.message : String(err)}`);
