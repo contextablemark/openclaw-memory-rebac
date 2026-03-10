@@ -99,7 +99,7 @@ def patch():
             "RETURN DISTINCT r.uuid AS uuid"
         )
         records, _, _ = await singleton_client.driver.execute_query(
-            query, {"episode_uuid": episode_uuid}
+            query, parameters_={"episode_uuid": episode_uuid}
         )
         return [{"uuid": r["uuid"]} for r in records]
 
