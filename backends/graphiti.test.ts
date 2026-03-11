@@ -216,7 +216,7 @@ describe("GraphitiBackend", () => {
   });
 
   describe("deleteFragment", () => {
-    test("calls DELETE /episode/{uuid}", async () => {
+    test("calls DELETE /episode/{uuid} by default", async () => {
       const backend = new GraphitiBackend(defaultConfig);
 
       mockFetch.mockResolvedValueOnce(
@@ -228,6 +228,21 @@ describe("GraphitiBackend", () => {
 
       const deleteCall = mockFetch.mock.calls[0];
       expect(deleteCall[0]).toBe("http://localhost:8000/episode/episode-uuid-123");
+      expect(deleteCall[1].method).toBe("DELETE");
+    });
+
+    test("calls DELETE /entity-edge/{uuid} for fact type", async () => {
+      const backend = new GraphitiBackend(defaultConfig);
+
+      mockFetch.mockResolvedValueOnce(
+        jsonResponse({ message: "Deleted", success: true }),
+      );
+
+      const result = await backend.deleteFragment?.("fact-uuid-456", "fact");
+      expect(result).toBe(true);
+
+      const deleteCall = mockFetch.mock.calls[0];
+      expect(deleteCall[0]).toBe("http://localhost:8000/entity-edge/fact-uuid-456");
       expect(deleteCall[1].method).toBe("DELETE");
     });
   });

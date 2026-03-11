@@ -168,12 +168,22 @@ export class SpiceDbClient {
   ): Promise<number> {
     if (tuples.length === 0) return 0;
 
-    // Try streaming bulk import first
+    // Try streaming bulk import first (uses CREATE semantics — rejects duplicates)
     if (typeof this.promises.bulkImportRelationships === "function") {
-      return this.bulkImportViaStream(tuples, batchSize);
+      try {
+        return await this.bulkImportViaStream(tuples, batchSize);
+      } catch (err: unknown) {
+        // ALREADY_EXISTS means some relationships exist (e.g. partial previous run).
+        // Fall through to batched writeRelationships which uses TOUCH (idempotent).
+        const msg = err instanceof Error ? err.message : String(err);
+        if (msg.includes("ALREADY_EXISTS")) {
+          return this.bulkImportViaWrite(tuples, batchSize);
+        }
+        throw err;
+      }
     }
 
-    // Fallback: batched writeRelationships
+    // Fallback: batched writeRelationships (uses TOUCH — idempotent)
     return this.bulkImportViaWrite(tuples, batchSize);
   }
 

@@ -6,7 +6,8 @@
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "lib": ["DOM", "DOM.Iterable", "ES2023"],
-    "noEmit": true,
+    "outDir": "dist",
+    "declaration": true,
     "resolveJsonModule": true,
     "skipLibCheck": true,
     "strict": true,
@@ -16,6 +17,6 @@
       "openclaw/plugin-sdk": ["../openclaw/src/plugin-sdk/index.ts"]
     }
   },
-  "include": ["*.ts", "bin/*.ts"],
-  "exclude": ["node_modules", "*.test.ts", "*.e2e.test.ts"]
+  "include": ["*.ts", "backends/*.ts"],
+  "exclude": ["node_modules", "*.test.ts", "*.e2e.test.ts", "backends/*.test.ts", "bin", "vitest.*.ts"]
 }

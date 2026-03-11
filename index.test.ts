@@ -167,7 +167,7 @@ describe("openclaw-memory-rebac plugin", () => {
       },
     };
 
-    await expect(plugin.default.register(badApi)).rejects.toThrow("spicedb.token is not configured");
+    expect(() => plugin.default.register(badApi)).toThrow("spicedb.token is not configured");
   });
 
   test("creates GraphitiBackend when backend=graphiti", async () => {
@@ -316,6 +316,147 @@ describe("openclaw-memory-rebac plugin", () => {
 
     expect(mockClient.promises.writeRelationships).toHaveBeenCalled();
   });
+
+  // ==========================================================================
+  // memory_forget authorization tests
+  // ==========================================================================
+
+  test("memory_forget succeeds when fragment-level delete permission exists", async () => {
+    const { v1 } = await import("@authzed/authzed-node");
+    const mockClient = v1.NewClient();
+
+    // checkPermission returns HAS_PERMISSION for the fragment-level delete check
+    mockClient.promises.checkPermission = vi.fn().mockResolvedValue({
+      permissionship: 2, // HAS_PERMISSION
+    });
+
+    // Mock backend deleteFragment endpoint
+    mockFetch.mockImplementation((url: string, opts?: RequestInit) => {
+      if (url.includes("/episode/")) {
+        return Promise.resolve({
+          ok: true,
+          headers: new Headers({ "content-type": "application/json" }),
+          json: () => Promise.resolve({ success: true }),
+        });
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+    });
+
+    const plugin = await import("./index.js");
+    await plugin.default.register(mockApi);
+
+    const forgetTool = registeredTools.find((t) => t.name === "memory_forget");
+    const result = await forgetTool.execute("call-1", { id: "fact:test-uuid-123" });
+
+    expect(result.content[0].text).toBe("Memory forgotten.");
+    expect(result.details.action).toBe("deleted");
+    // lookupResources should NOT have been called (fragment check passed)
+    expect(mockClient.promises.lookupResources).not.toHaveBeenCalled();
+  });
+
+  test("memory_forget falls back to group-level authorization when fragment check fails", async () => {
+    const { v1 } = await import("@authzed/authzed-node");
+    const mockClient = v1.NewClient();
+
+    let checkCallCount = 0;
+    mockClient.promises.checkPermission = vi.fn().mockImplementation(() => {
+      checkCallCount++;
+      if (checkCallCount === 1) {
+        // First call: canDeleteFragment → NO_PERMISSION
+        return Promise.resolve({ permissionship: 1 });
+      }
+      // Second call: canWriteToGroup → HAS_PERMISSION
+      return Promise.resolve({ permissionship: 2 });
+    });
+
+    // lookupAuthorizedGroups returns groups
+    mockClient.promises.lookupResources = vi.fn().mockResolvedValue([
+      { resourceObjectId: "main" },
+    ]);
+
+    mockFetch.mockImplementation((url: string) => {
+      if (url.includes("/episode/")) {
+        return Promise.resolve({
+          ok: true,
+          headers: new Headers({ "content-type": "application/json" }),
+          json: () => Promise.resolve({ success: true }),
+        });
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+    });
+
+    const plugin = await import("./index.js");
+    await plugin.default.register(mockApi);
+
+    const forgetTool = registeredTools.find((t) => t.name === "memory_forget");
+    const result = await forgetTool.execute("call-1", { id: "fact:orphan-uuid-456" });
+
+    expect(result.content[0].text).toBe("Memory forgotten.");
+    expect(result.details.action).toBe("deleted");
+    // lookupResources was called for the group-level fallback
+    expect(mockClient.promises.lookupResources).toHaveBeenCalled();
+    // Info log about fallback authorization
+    expect(logs.some(log => log.includes("authorized via group membership"))).toBe(true);
+  });
+
+  test("memory_forget denies when both fragment and group-level checks fail", async () => {
+    const { v1 } = await import("@authzed/authzed-node");
+    const mockClient = v1.NewClient();
+
+    // All permission checks return NO_PERMISSION
+    mockClient.promises.checkPermission = vi.fn().mockResolvedValue({
+      permissionship: 1, // NO_PERMISSION
+    });
+
+    // No authorized groups
+    mockClient.promises.lookupResources = vi.fn().mockResolvedValue([]);
+
+    const plugin = await import("./index.js");
+    await plugin.default.register(mockApi);
+
+    const forgetTool = registeredTools.find((t) => t.name === "memory_forget");
+    const result = await forgetTool.execute("call-1", { id: "fact:unauth-uuid-789" });
+
+    expect(result.content[0].text).toContain("Permission denied");
+    expect(result.details.action).toBe("denied");
+  });
+
+  test("memory_forget denies when fragment check fails and user has groups but no contribute permission", async () => {
+    const { v1 } = await import("@authzed/authzed-node");
+    const mockClient = v1.NewClient();
+
+    // All checkPermission calls return NO_PERMISSION (fragment delete + group contribute)
+    mockClient.promises.checkPermission = vi.fn().mockResolvedValue({
+      permissionship: 1,
+    });
+
+    // User has groups (access) but no contribute permission
+    mockClient.promises.lookupResources = vi.fn().mockResolvedValue([
+      { resourceObjectId: "read-only-group" },
+    ]);
+
+    const plugin = await import("./index.js");
+    await plugin.default.register(mockApi);
+
+    const forgetTool = registeredTools.find((t) => t.name === "memory_forget");
+    const result = await forgetTool.execute("call-1", { id: "some-uuid" });
+
+    expect(result.content[0].text).toContain("Permission denied");
+    expect(result.details.action).toBe("denied");
+  });
+
+  test("memory_forget rejects entity type IDs", async () => {
+    const plugin = await import("./index.js");
+    await plugin.default.register(mockApi);
+
+    const forgetTool = registeredTools.find((t) => t.name === "memory_forget");
+    const result = await forgetTool.execute("call-1", { id: "entity:some-uuid" });
+
+    expect(result.content[0].text).toContain("Entities cannot be deleted directly");
+    expect(result.details.action).toBe("error");
+  });
+
+  // ==========================================================================
 
   test("CLI registration calls backend-agnostic registerCommands", async () => {
     const plugin = await import("./index.js");
