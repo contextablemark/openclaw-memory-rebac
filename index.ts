@@ -368,6 +368,7 @@ const rebacMemoryPlugin = {
           // Parse optional type prefix — strip it to get the bare UUID
           const colonIdx = id.indexOf(":");
           let uuid: string;
+          let fragmentType: string | undefined;
           if (colonIdx > 0 && colonIdx < 10) {
             const prefix = id.slice(0, colonIdx);
             // "entity" type cannot be deleted this way (graph-backend specific)
@@ -377,6 +378,7 @@ const rebacMemoryPlugin = {
                 details: { action: "error", id },
               };
             }
+            fragmentType = prefix;
             uuid = id.slice(colonIdx + 1);
           } else {
             uuid = id;
@@ -411,7 +413,7 @@ const rebacMemoryPlugin = {
           // Attempt backend deletion (optional — not all backends support it)
           if (backend.deleteFragment) {
             try {
-              await backend.deleteFragment(uuid);
+              await backend.deleteFragment(uuid, fragmentType);
             } catch (err) {
               api.logger.warn(`openclaw-memory-rebac: backend deletion failed for ${uuid}: ${err}`);
               // Continue to SpiceDB de-authorization even if backend deletion fails

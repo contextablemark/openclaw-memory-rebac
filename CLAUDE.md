@@ -47,3 +47,11 @@ Use PR branches for changes — don't push directly to main.
 - `register()` in `index.ts` should be synchronous to avoid the OpenClaw "async registration" warning; backend registry uses static imports instead of dynamic `import()`
 - Groq and some OpenAI-compatible providers require the word "json" in messages when using `response_format=json_object` — handled by `JsonSafeLLMClient` wrapper in `graphiti_overlay.py`
 - Edge `fact_embedding` can be clobbered by LLM-extracted attributes — diagnostic logging in `startup.py` watches for this
+
+## Graphiti-specific notes
+
+- **Deletion routing**: `deleteFragment` uses the type prefix from `memory_recall` IDs to choose the correct endpoint — `fact:` → `DELETE /entity-edge/{uuid}`, episode/default → `DELETE /episode/{uuid}`
+- **Non-cascading deletes**: Graphiti's entity edge deletion only removes the `RELATES_TO` relationship. Source/target entity nodes remain in the graph and can become orphaned (zero edges). Episodes that referenced the deleted edge are not updated.
+- **Invalidation vs deletion**: Graphiti distinguishes temporal invalidation (`expired_at`/`invalid_at` fields, preserves history) from hard deletion (removes entirely). `memory_forget` performs hard deletion.
+- **Embedding provider config**: The Graphiti container's `.env` configures LLM, embedder, and reranker independently. The OpenAI client auto-appends `/embeddings` to `EMBEDDING_BASE_URL`, so set just the base (e.g. `https://api.voyageai.com/v1`, not `.../v1/embeddings`).
+- **Neo4j driver wrapper**: `singleton_client.driver` is a Graphiti `Neo4jDriver` wrapper, not the raw Neo4j async driver. Custom endpoints in `startup.py` should use `singleton_client.driver.client` (the raw `neo4j.AsyncDriver`) to avoid signature mismatches across graphiti-core versions.

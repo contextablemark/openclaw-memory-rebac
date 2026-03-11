@@ -160,7 +160,7 @@ export interface MemoryBackend {
    * Optional: not all backends support sub-dataset deletion.
    * Returns true if deleted, false if the backend doesn't support it.
    */
-  deleteFragment?(uuid: string): Promise<boolean>;
+  deleteFragment?(uuid: string, type?: string): Promise<boolean>;
 
   /**
    * Discover fragment (fact/edge) UUIDs that were extracted from a stored episode.

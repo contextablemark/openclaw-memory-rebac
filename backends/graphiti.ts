@@ -254,11 +254,11 @@ export class GraphitiBackend implements MemoryBackend {
     return [];
   }
 
-  async deleteFragment(uuid: string): Promise<boolean> {
-    await this.restCall<GraphitiResult>(
-      "DELETE",
-      `/episode/${encodeURIComponent(uuid)}`,
-    );
+  async deleteFragment(uuid: string, type?: string): Promise<boolean> {
+    const path = type === "fact"
+      ? `/entity-edge/${encodeURIComponent(uuid)}`
+      : `/episode/${encodeURIComponent(uuid)}`;
+    await this.restCall<GraphitiResult>("DELETE", path);
     return true;
   }
 
