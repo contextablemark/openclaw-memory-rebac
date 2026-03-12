@@ -149,6 +149,25 @@ def patch():
         'created_at', 'labels',
     }
 
+    # Edge names that represent deduplication artifacts, not real semantic facts.
+    # Older graphiti-core versions created these during node resolution; the LLM
+    # may also extract them as relationships.  Neither source is useful — upstream
+    # abandoned IS_DUPLICATE_OF edges and the information is redundant with node
+    # UUID reuse.  Matched case-insensitively with space/underscore normalization.
+    # See: https://github.com/contextablemark/openclaw-memory-rebac/issues/12
+    RESERVED_EDGE_NAMES = {
+        'IS_DUPLICATE_OF',
+        'DUPLICATE_OF',
+        'HAS_DUPLICATE',
+        'DUPLICATES',
+    }
+
+    def _is_reserved_edge_name(name):
+        """Check if an edge name is a deduplication artifact."""
+        if not name:
+            return False
+        return name.strip().upper().replace(" ", "_") in RESERVED_EDGE_NAMES
+
     def _sanitize_attributes(attrs, reserved_keys):
         """Flatten non-primitive values and strip reserved keys to prevent clobber."""
         if not attrs:
@@ -194,6 +213,31 @@ def patch():
                     list((edge.attributes or {}).keys()),
                     edge.source_node_uuid, edge.target_node_uuid,
                 )
+        # Filter deduplication-artifact edges (IS_DUPLICATE_OF and variants).
+        # These are not real facts — they are structural metadata that upstream
+        # graphiti-core has since abandoned.
+        original_edge_count = len(entity_edges)
+        entity_edges = [e for e in entity_edges if not _is_reserved_edge_name(e.name)]
+        dup_filtered = original_edge_count - len(entity_edges)
+        if dup_filtered:
+            logger.warning(
+                "DIAG duplicate_edge_filtered: removed %d IS_DUPLICATE_OF-family "
+                "edge(s) at bulk_add level", dup_filtered,
+            )
+
+        # Filter self-referential edges (entity relating to itself).
+        pre_self_count = len(entity_edges)
+        entity_edges = [
+            e for e in entity_edges
+            if e.source_node_uuid != e.target_node_uuid
+        ]
+        self_ref_count = pre_self_count - len(entity_edges)
+        if self_ref_count:
+            logger.warning(
+                "DIAG self_ref_edge_filtered: removed %d self-referential edge(s)",
+                self_ref_count,
+            )
+
         return await original_bulk_add(
             driver, episodic_nodes, episodic_edges,
             entity_nodes, entity_edges, embedder,
@@ -253,15 +297,26 @@ def patch():
     except Exception as _patch_err:
         logger.warning("Could not patch ExtractedEdges for None-index filtering: %s", _patch_err)
 
-    # Fallback: catch any remaining TypeError from the whole function
+    # Fallback: catch any remaining TypeError from the whole function,
+    # and filter IS_DUPLICATE_OF edges early (before embedding computation).
     async def safe_extract_edges(*args, **kwargs):
         try:
-            return await original_extract_edges(*args, **kwargs)
+            result = await original_extract_edges(*args, **kwargs)
         except TypeError as e:
             if "not supported between instances" in str(e):
                 logger.warning("extract_edges skipped due to LLM output issue: %s", e)
                 return []
             raise
+        if result:
+            original_len = len(result)
+            result = [e for e in result if not _is_reserved_edge_name(e.name)]
+            dropped = original_len - len(result)
+            if dropped:
+                logger.warning(
+                    "DIAG duplicate_edge_filtered: removed %d IS_DUPLICATE_OF-family "
+                    "edge(s) at extract_edges level", dropped,
+                )
+        return result
 
     edge_ops_mod.extract_edges = safe_extract_edges
     # Patch the local binding in graphiti.py

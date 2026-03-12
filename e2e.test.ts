@@ -484,3 +484,129 @@ describe("e2e: backend-specific features", () => {
     expect(typeof graphitiBackend.deleteFragment).toBe("function");
   });
 });
+
+describe("e2e: IS_DUPLICATE_OF filtering (#12)", () => {
+  function sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  beforeAll(async () => {
+    if (!LIVE_TEST) return;
+
+    // Re-use module-level clients (initialized by first describe block),
+    // but ensure they're set up if this block runs in isolation.
+    if (!spicedb) {
+      spicedb = new SpiceDbClient({
+        endpoint: SPICEDB_ENDPOINT,
+        token: SPICEDB_TOKEN,
+        insecure: true,
+      });
+
+      const schemaPath = new URL("./schema.zed", import.meta.url).pathname;
+      const { readFileSync } = await import("node:fs");
+      const schema = readFileSync(schemaPath, "utf-8");
+      await spicedb.writeSchema(schema);
+    }
+
+    if (!backend) {
+      backend = new GraphitiBackend({
+        endpoint: GRAPHITI_ENDPOINT,
+        defaultGroupId: "e2e_test",
+        uuidPollIntervalMs: 3000,
+        uuidPollMaxAttempts: 60,
+        customInstructions: "",
+      });
+    }
+
+    if (!testSubject) {
+      testSubject = { type: "agent", id: `e2e_dedup_${Date.now()}` };
+    }
+    if (!testGroup) {
+      testGroup = `e2e_dedup_group_${Date.now()}`;
+    }
+
+    await ensureGroupMembership(spicedb, testGroup, testSubject);
+  });
+
+  skipE2E("overlapping entity mentions do not produce IS_DUPLICATE_OF facts", async () => {
+    // Store two episodes about the same entities to trigger dedup pathways.
+    // Older graphiti-core + some LLMs (llama-3.3-70b) would create
+    // IS_DUPLICATE_OF edges between overlapping entity nodes.
+    const episode1 = await backend.store({
+      content: "Marcus Rivera is the CTO of NovaTech Solutions. He oversees all engineering teams.",
+      groupId: testGroup,
+      sourceDescription: "dedup test episode 1",
+    });
+    const frag1 = await episode1.fragmentId;
+    expect(frag1).toBeTruthy();
+
+    await writeFragmentRelationships(spicedb, {
+      fragmentId: frag1,
+      groupId: testGroup,
+      sharedBy: testSubject,
+    });
+
+    // Second episode mentions the same entities — this is where dedup edges appear
+    const episode2 = await backend.store({
+      content: "Marcus Rivera from NovaTech Solutions presented the Q3 roadmap at the all-hands meeting.",
+      groupId: testGroup,
+      sourceDescription: "dedup test episode 2",
+    });
+    const frag2 = await episode2.fragmentId;
+    expect(frag2).toBeTruthy();
+
+    await writeFragmentRelationships(spicedb, {
+      fragmentId: frag2,
+      groupId: testGroup,
+      sharedBy: testSubject,
+    });
+
+    // Poll until we get results about Marcus/NovaTech
+    let results: Awaited<ReturnType<typeof backend.searchGroup>> = [];
+    let foundRelevant = false;
+    const maxAttempts = 60;
+    const pollInterval = 5000;
+
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      await sleep(pollInterval);
+      results = await backend.searchGroup({
+        query: "Marcus Rivera NovaTech CTO roadmap",
+        groupId: testGroup,
+        limit: 20,
+      });
+
+      foundRelevant = results.some((r) => {
+        const text = (r.summary + " " + (r.context || "")).toLowerCase();
+        return text.includes("marcus") || text.includes("novatech");
+      });
+
+      if (foundRelevant) break;
+    }
+
+    expect(results.length).toBeGreaterThan(0);
+
+    // Key assertion: no IS_DUPLICATE_OF edges should appear in results
+    const hasDuplicateEdge = results.some((r) => {
+      const text = (r.summary + " " + (r.context || "")).toLowerCase();
+      return text.includes("is_duplicate_of") ||
+             text.includes("duplicate_of") ||
+             text.includes("has_duplicate") ||
+             text.includes("duplicates");
+    });
+
+    if (hasDuplicateEdge) {
+      console.log("[graphiti] WARNING: IS_DUPLICATE_OF edges found in results:");
+      results.filter((r) => {
+        const text = (r.summary + " " + (r.context || "")).toLowerCase();
+        return text.includes("duplicate");
+      }).forEach((r, i) => {
+        console.log(`  [${i}] summary: ${r.summary}, context: ${r.context}`);
+      });
+    }
+
+    expect(hasDuplicateEdge).toBe(false);
+
+    console.log(`[graphiti] Dedup test: ${results.length} results, no IS_DUPLICATE_OF edges`);
+  }, 600000);
+
+});

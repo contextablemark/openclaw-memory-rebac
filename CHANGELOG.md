@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.5] - 2026-03-12
+
+### Fixed
+
+- **IS_DUPLICATE_OF dedup edges pollute search results** (Docker image): Older graphiti-core versions and certain LLMs (e.g. `llama-3.3-70b-versatile`) create `IS_DUPLICATE_OF`, `DUPLICATE_OF`, `HAS_DUPLICATE`, and `DUPLICATES` edges between overlapping entity nodes. These are dedup artifacts, not real knowledge. `startup.py` now filters them at two levels: `safe_extract_edges` (early, before embedding computation) and `patched_bulk_add` (safety net before Neo4j write). ([#12](https://github.com/Contextable/openclaw-memory-rebac/issues/12))
+- **Self-referential edges** (Docker image): Edges where `source_node_uuid == target_node_uuid` are now filtered out in `patched_bulk_add` before being written to Neo4j.
+
+### Added
+
+- E2E test for IS_DUPLICATE_OF edge filtering: stores overlapping entity mentions and verifies no dedup artifacts appear in search results.
+
 ## [Unreleased]
 
 ### Fixed
