@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-03-14
+
+### Security
+
+- **Bind all exposed ports to `127.0.0.1`**: Graphiti (8000), SpiceDB gRPC (50051), and SpiceDB HTTP (8080) were previously bound to `0.0.0.0`, exposing them to the network. All three now bind to localhost only, preventing remote access.
+
 ## [0.1.5] - 2026-03-12
 
 ### Fixed
