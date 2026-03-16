@@ -17,6 +17,9 @@ definition memory_fragment {
     relation shared_by: person | agent
 
     // Can view if: directly involved, shared it, or have access to the source group
+    // Fragment-level sharing uses the "involves" relation — adding a subject as
+    // involved grants them view access to that specific fragment without requiring
+    // group membership.
     permission view = involves + shared_by + source_group->access
     // Can delete if: you shared it (owner-level control)
     permission delete = shared_by

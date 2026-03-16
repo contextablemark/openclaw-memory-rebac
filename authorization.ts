@@ -189,3 +189,125 @@ export async function ensureGroupMembership(
     },
   ]);
 }
+
+// ============================================================================
+// Sharing Operations
+// ============================================================================
+
+/**
+ * Share a memory fragment with a target subject by writing an "involves" tuple.
+ * The involves relation grants view permission on the fragment.
+ * Idempotent (uses TOUCH operation).
+ */
+export async function shareFragmentWith(
+  spicedb: SpiceDbClient,
+  fragmentId: string,
+  target: Subject,
+): Promise<string | undefined> {
+  return spicedb.writeRelationships([
+    {
+      resourceType: "memory_fragment",
+      resourceId: fragmentId,
+      relation: "involves",
+      subjectType: target.type,
+      subjectId: target.id,
+    },
+  ]);
+}
+
+/**
+ * Revoke fragment-level sharing by deleting the "involves" tuple for a target.
+ */
+export async function unshareFragmentFrom(
+  spicedb: SpiceDbClient,
+  fragmentId: string,
+  target: Subject,
+): Promise<void> {
+  await spicedb.deleteRelationships([
+    {
+      resourceType: "memory_fragment",
+      resourceId: fragmentId,
+      relation: "involves",
+      subjectType: target.type,
+      subjectId: target.id,
+    },
+  ]);
+}
+
+/**
+ * Remove a subject from a group, revoking group-level access.
+ */
+export async function removeGroupMember(
+  spicedb: SpiceDbClient,
+  groupId: string,
+  member: Subject,
+): Promise<void> {
+  await spicedb.deleteRelationships([
+    {
+      resourceType: "group",
+      resourceId: groupId,
+      relation: "member",
+      subjectType: member.type,
+      subjectId: member.id,
+    },
+  ]);
+}
+
+/**
+ * Check if a subject has view permission on a memory fragment.
+ * Used to gate sharing — you can only share what you can see.
+ */
+export async function canViewFragment(
+  spicedb: SpiceDbClient,
+  subject: Subject,
+  fragmentId: string,
+  zedToken?: string,
+): Promise<boolean> {
+  return spicedb.checkPermission({
+    resourceType: "memory_fragment",
+    resourceId: fragmentId,
+    permission: "view",
+    subjectType: subject.type,
+    subjectId: subject.id,
+    consistency: tokenConsistency(zedToken),
+  });
+}
+
+/**
+ * Find all memory fragments where the subject is directly involved
+ * (has an "involves" relationship). Returns fragment IDs.
+ *
+ * Used by memory_inbox and the shared-memory notification mechanism.
+ */
+export async function lookupDirectlySharedFragments(
+  spicedb: SpiceDbClient,
+  subject: Subject,
+): Promise<string[]> {
+  const tuples = await spicedb.readRelationships({
+    resourceType: "memory_fragment",
+    relation: "involves",
+    subjectType: subject.type,
+    subjectId: subject.id,
+  });
+  return tuples.map((t) => t.resourceId);
+}
+
+/**
+ * For a given fragment, look up who shared it (the shared_by subject).
+ * Returns the first shared_by subject found, or undefined.
+ */
+export async function lookupFragmentSharer(
+  spicedb: SpiceDbClient,
+  fragmentId: string,
+): Promise<Subject | undefined> {
+  const tuples = await spicedb.readRelationships({
+    resourceType: "memory_fragment",
+    resourceId: fragmentId,
+    relation: "shared_by",
+  });
+  if (tuples.length === 0) return undefined;
+  return {
+    type: tuples[0].subjectType as "agent" | "person",
+    id: tuples[0].subjectId,
+  };
+}

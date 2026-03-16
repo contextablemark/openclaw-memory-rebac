@@ -24,6 +24,13 @@ import {
   lookupAuthorizedGroups,
   writeFragmentRelationships,
   ensureGroupMembership,
+  shareFragmentWith,
+  unshareFragmentFrom,
+  removeGroupMember,
+  canViewFragment,
+  canWriteToGroup,
+  lookupDirectlySharedFragments,
+  lookupFragmentSharer,
   type Subject,
 } from "./authorization.js";
 import { searchAuthorizedMemories } from "./search.js";
@@ -516,6 +523,131 @@ export function registerCommands(cmd: Command, ctx: CliContext): void {
         }
       });
   }
+
+  // --------------------------------------------------------------------------
+  // share-fragment
+  // --------------------------------------------------------------------------
+
+  cmd
+    .command("share-fragment")
+    .description("Share a memory fragment with another agent or person")
+    .argument("<fragment-id>", "Fragment ID (type-prefixed OK, e.g. fact:UUID)")
+    .argument("<target-id>", "Target subject ID")
+    .option("--type <type>", "Target type (agent|person)", "agent")
+    .action(async (fragmentId: string, targetId: string, opts: { type: string }) => {
+      const targetType = opts.type === "person" ? "person" : "agent";
+      const colonIdx = fragmentId.indexOf(":");
+      const uuid = colonIdx > 0 && colonIdx < 10
+        ? fragmentId.slice(colonIdx + 1)
+        : fragmentId;
+
+      const canView = await canViewFragment(spicedb, currentSubject, uuid, getLastWriteToken());
+      if (!canView) {
+        const groups = await lookupAuthorizedGroups(spicedb, currentSubject, getLastWriteToken());
+        if (groups.length === 0) {
+          console.log(`Permission denied: cannot view fragment "${uuid}"`);
+          return;
+        }
+      }
+
+      await shareFragmentWith(spicedb, uuid, { type: targetType as "agent" | "person", id: targetId });
+      console.log(`Shared fragment ${fragmentId} with ${targetType}:${targetId}`);
+    });
+
+  // --------------------------------------------------------------------------
+  // share-group
+  // --------------------------------------------------------------------------
+
+  cmd
+    .command("share-group")
+    .description("Add a subject to a group (group-level sharing)")
+    .argument("<group-id>", "Group ID")
+    .argument("<target-id>", "Target subject ID")
+    .option("--type <type>", "Target type (agent|person)", "agent")
+    .action(async (groupId: string, targetId: string, opts: { type: string }) => {
+      const targetType = opts.type === "person" ? "person" : "agent";
+      const allowed = await canWriteToGroup(spicedb, currentSubject, groupId, getLastWriteToken());
+      if (!allowed) {
+        console.log(`Permission denied: cannot manage group "${groupId}"`);
+        return;
+      }
+
+      await ensureGroupMembership(spicedb, groupId, { type: targetType as "agent" | "person", id: targetId });
+      console.log(`Added ${targetType}:${targetId} to group "${groupId}"`);
+    });
+
+  // --------------------------------------------------------------------------
+  // unshare-fragment
+  // --------------------------------------------------------------------------
+
+  cmd
+    .command("unshare-fragment")
+    .description("Revoke fragment-level sharing from an agent or person")
+    .argument("<fragment-id>", "Fragment ID (type-prefixed OK)")
+    .argument("<target-id>", "Target subject ID")
+    .option("--type <type>", "Target type (agent|person)", "agent")
+    .action(async (fragmentId: string, targetId: string, opts: { type: string }) => {
+      const targetType = opts.type === "person" ? "person" : "agent";
+      const colonIdx = fragmentId.indexOf(":");
+      const uuid = colonIdx > 0 && colonIdx < 10
+        ? fragmentId.slice(colonIdx + 1)
+        : fragmentId;
+
+      await unshareFragmentFrom(spicedb, uuid, { type: targetType as "agent" | "person", id: targetId });
+      console.log(`Unshared fragment ${fragmentId} from ${targetType}:${targetId}`);
+    });
+
+  // --------------------------------------------------------------------------
+  // remove-member
+  // --------------------------------------------------------------------------
+
+  cmd
+    .command("remove-member")
+    .description("Remove a subject from a group")
+    .argument("<group-id>", "Group ID")
+    .argument("<target-id>", "Target subject ID")
+    .option("--type <type>", "Target type (agent|person)", "agent")
+    .action(async (groupId: string, targetId: string, opts: { type: string }) => {
+      const targetType = opts.type === "person" ? "person" : "agent";
+      const allowed = await canWriteToGroup(spicedb, currentSubject, groupId, getLastWriteToken());
+      if (!allowed) {
+        console.log(`Permission denied: cannot manage group "${groupId}"`);
+        return;
+      }
+
+      await removeGroupMember(spicedb, groupId, { type: targetType as "agent" | "person", id: targetId });
+      console.log(`Removed ${targetType}:${targetId} from group "${groupId}"`);
+    });
+
+  // --------------------------------------------------------------------------
+  // inbox
+  // --------------------------------------------------------------------------
+
+  cmd
+    .command("inbox")
+    .description("Show memories shared with the current subject")
+    .option("--limit <n>", "Max items", "10")
+    .action(async (opts: { limit: string }) => {
+      const limit = parseInt(opts.limit);
+      const fragmentIds = await lookupDirectlySharedFragments(spicedb, currentSubject);
+
+      if (fragmentIds.length === 0) {
+        console.log("No memories have been shared with you.");
+        return;
+      }
+
+      console.log(`${fragmentIds.length} memory/memories shared with ${currentSubject.type}:${currentSubject.id}:\n`);
+
+      for (const fid of fragmentIds.slice(0, limit)) {
+        const sharer = await lookupFragmentSharer(spicedb, fid);
+        const sharerLabel = sharer ? `${sharer.type}:${sharer.id}` : "unknown";
+        console.log(`  [from ${sharerLabel}] ${fid}`);
+      }
+
+      if (fragmentIds.length > limit) {
+        console.log(`  ... and ${fragmentIds.length - limit} more`);
+      }
+    });
 
   // --------------------------------------------------------------------------
   // Backend-specific extension point

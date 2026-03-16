@@ -27,7 +27,13 @@ import {
   deleteFragmentRelationships,
   canDeleteFragment,
   canWriteToGroup,
+  canViewFragment,
   ensureGroupMembership,
+  shareFragmentWith,
+  unshareFragmentFrom,
+  removeGroupMember,
+  lookupDirectlySharedFragments,
+  lookupFragmentSharer,
   type Subject,
 } from "./authorization.js";
 import {
@@ -473,6 +479,268 @@ const rebacMemoryPlugin = {
     );
 
     // ========================================================================
+    // Sharing Tools
+    // ========================================================================
+
+    // Track fragments the current subject has already seen as "shared with me"
+    // so we can detect newly shared fragments in before_agent_start.
+    const seenSharedFragments = new Set<string>();
+
+    api.registerTool(
+      {
+        name: "memory_share",
+        label: "Memory Share",
+        description:
+          "Share a memory or group with another agent or person. Use fragment_id to share a specific memory (uses the 'involves' relationship). Use group_id to add someone as a group member.",
+        parameters: Type.Object({
+          target_id: Type.String({ description: "ID of the agent or person to share with" }),
+          target_type: Type.Optional(
+            Type.Union(
+              [Type.Literal("agent"), Type.Literal("person")],
+              { description: "Type of target (default: 'agent')" },
+            ),
+          ),
+          fragment_id: Type.Optional(
+            Type.String({ description: "Memory ID to share (e.g. 'fact:UUID' from memory_recall)" }),
+          ),
+          group_id: Type.Optional(
+            Type.String({ description: "Group ID to share (adds target as member)" }),
+          ),
+        }),
+        async execute(_toolCallId, params) {
+          const {
+            target_id,
+            target_type = "agent",
+            fragment_id,
+            group_id,
+          } = params as {
+            target_id: string;
+            target_type?: "agent" | "person";
+            fragment_id?: string;
+            group_id?: string;
+          };
+
+          if ((!fragment_id && !group_id) || (fragment_id && group_id)) {
+            return {
+              content: [{ type: "text", text: "Provide exactly one of fragment_id or group_id." }],
+              details: { action: "error" },
+            };
+          }
+
+          const target: Subject = { type: target_type, id: target_id };
+
+          if (fragment_id) {
+            // Parse type-prefixed ID (same as memory_forget)
+            const colonIdx = fragment_id.indexOf(":");
+            const uuid = colonIdx > 0 && colonIdx < 10
+              ? fragment_id.slice(colonIdx + 1)
+              : fragment_id;
+
+            // Gate: can only share what you can view
+            let canView = await canViewFragment(spicedb, currentSubject, uuid, lastWriteToken);
+            if (!canView) {
+              // Fallback: check group-level access (fragment may lack direct tuples)
+              const groups = await lookupAuthorizedGroups(spicedb, currentSubject, lastWriteToken);
+              canView = groups.length > 0;
+            }
+            if (!canView) {
+              return {
+                content: [{ type: "text", text: `Permission denied: cannot view fragment "${uuid}"` }],
+                details: { action: "denied", fragmentId: uuid },
+              };
+            }
+
+            const writeToken = await shareFragmentWith(spicedb, uuid, target);
+            if (writeToken) lastWriteToken = writeToken;
+
+            return {
+              content: [{
+                type: "text",
+                text: `Shared memory ${fragment_id} with ${target_type}:${target_id}`,
+              }],
+              details: { action: "shared", fragmentId: uuid, target: `${target_type}:${target_id}` },
+            };
+          }
+
+          // group_id path
+          const allowed = await canWriteToGroup(spicedb, currentSubject, group_id!, lastWriteToken);
+          if (!allowed) {
+            return {
+              content: [{ type: "text", text: `Permission denied: cannot share group "${group_id}"` }],
+              details: { action: "denied", groupId: group_id },
+            };
+          }
+
+          const writeToken = await ensureGroupMembership(spicedb, group_id!, target);
+          if (writeToken) lastWriteToken = writeToken;
+
+          return {
+            content: [{
+              type: "text",
+              text: `Added ${target_type}:${target_id} to group "${group_id}"`,
+            }],
+            details: { action: "shared", groupId: group_id, target: `${target_type}:${target_id}` },
+          };
+        },
+      },
+      { name: "memory_share" },
+    );
+
+    api.registerTool(
+      {
+        name: "memory_unshare",
+        label: "Memory Unshare",
+        description:
+          "Revoke shared access to a memory or group. Use fragment_id to unshare a specific memory. Use group_id to remove someone from a group.",
+        parameters: Type.Object({
+          target_id: Type.String({ description: "ID of the agent or person to unshare from" }),
+          target_type: Type.Optional(
+            Type.Union(
+              [Type.Literal("agent"), Type.Literal("person")],
+              { description: "Type of target (default: 'agent')" },
+            ),
+          ),
+          fragment_id: Type.Optional(
+            Type.String({ description: "Memory ID to unshare (e.g. 'fact:UUID')" }),
+          ),
+          group_id: Type.Optional(
+            Type.String({ description: "Group ID to remove the target from" }),
+          ),
+        }),
+        async execute(_toolCallId, params) {
+          const {
+            target_id,
+            target_type = "agent",
+            fragment_id,
+            group_id,
+          } = params as {
+            target_id: string;
+            target_type?: "agent" | "person";
+            fragment_id?: string;
+            group_id?: string;
+          };
+
+          if ((!fragment_id && !group_id) || (fragment_id && group_id)) {
+            return {
+              content: [{ type: "text", text: "Provide exactly one of fragment_id or group_id." }],
+              details: { action: "error" },
+            };
+          }
+
+          const target: Subject = { type: target_type, id: target_id };
+
+          if (fragment_id) {
+            const colonIdx = fragment_id.indexOf(":");
+            const uuid = colonIdx > 0 && colonIdx < 10
+              ? fragment_id.slice(colonIdx + 1)
+              : fragment_id;
+
+            // Authorization: only the original sharer can unshare
+            let allowed = await canDeleteFragment(spicedb, currentSubject, uuid, lastWriteToken);
+            if (!allowed) {
+              // Fallback: group-level contribute permission (same pattern as memory_forget)
+              const groups = await lookupAuthorizedGroups(spicedb, currentSubject, lastWriteToken);
+              for (const g of groups) {
+                if (await canWriteToGroup(spicedb, currentSubject, g, lastWriteToken)) {
+                  allowed = true;
+                  break;
+                }
+              }
+            }
+            if (!allowed) {
+              return {
+                content: [{ type: "text", text: `Permission denied: cannot unshare fragment "${uuid}"` }],
+                details: { action: "denied", fragmentId: uuid },
+              };
+            }
+
+            await unshareFragmentFrom(spicedb, uuid, target);
+
+            return {
+              content: [{
+                type: "text",
+                text: `Unshared memory ${fragment_id} from ${target_type}:${target_id}`,
+              }],
+              details: { action: "unshared", fragmentId: uuid, target: `${target_type}:${target_id}` },
+            };
+          }
+
+          // group_id path
+          const allowed = await canWriteToGroup(spicedb, currentSubject, group_id!, lastWriteToken);
+          if (!allowed) {
+            return {
+              content: [{ type: "text", text: `Permission denied: cannot manage group "${group_id}"` }],
+              details: { action: "denied", groupId: group_id },
+            };
+          }
+
+          await removeGroupMember(spicedb, group_id!, target);
+
+          return {
+            content: [{
+              type: "text",
+              text: `Removed ${target_type}:${target_id} from group "${group_id}"`,
+            }],
+            details: { action: "unshared", groupId: group_id, target: `${target_type}:${target_id}` },
+          };
+        },
+      },
+      { name: "memory_unshare" },
+    );
+
+    api.registerTool(
+      {
+        name: "memory_inbox",
+        label: "Memory Inbox",
+        description:
+          "Check what memories have been shared with you. Shows fragments where you are listed as involved, along with who shared them.",
+        parameters: Type.Object({
+          limit: Type.Optional(Type.Number({ description: "Max items to return (default: 10)" })),
+        }),
+        async execute(_toolCallId, params) {
+          const { limit = 10 } = params as { limit?: number };
+
+          const fragmentIds = await lookupDirectlySharedFragments(spicedb, currentSubject);
+
+          if (fragmentIds.length === 0) {
+            return {
+              content: [{ type: "text", text: "No memories have been shared with you." }],
+              details: { count: 0 },
+            };
+          }
+
+          // Mark all as seen for the notification mechanism
+          for (const id of fragmentIds) seenSharedFragments.add(id);
+
+          // Look up who shared each fragment
+          const items: Array<{ fragmentId: string; sharer?: string }> = [];
+          for (const fid of fragmentIds.slice(0, limit)) {
+            const sharer = await lookupFragmentSharer(spicedb, fid);
+            items.push({
+              fragmentId: fid,
+              sharer: sharer ? `${sharer.type}:${sharer.id}` : "unknown",
+            });
+          }
+
+          const lines = items.map(
+            (item) => `- [from ${item.sharer}] ${item.fragmentId}`,
+          );
+
+          const text = `${fragmentIds.length} memory/memories shared with you:\n\n${lines.join("\n")}`;
+
+          return {
+            content: [{ type: "text", text }],
+            details: {
+              count: fragmentIds.length,
+              items,
+            },
+          };
+        },
+      },
+      { name: "memory_inbox" },
+    );
+
+    // ========================================================================
     // CLI Commands
     // ========================================================================
 
@@ -541,9 +809,47 @@ const rebacMemoryPlugin = {
             "You have knowledge-graph memory tools. Use them proactively:\n" +
             "- memory_recall: Search for facts, preferences, people, decisions, or past context. Use this BEFORE saying you don't know or remember something.\n" +
             "- memory_store: Save important new information (preferences, decisions, facts about people).\n" +
+            "- memory_share: Share a memory or group with another agent/person.\n" +
+            "- memory_inbox: Check what memories have been shared with you.\n" +
             "</memory-tools>";
 
-          if (totalCount === 0) return { prependContext: toolHint };
+          // Detect newly shared fragments
+          let sharedNotification = "";
+          try {
+            const sharedFragmentIds = await lookupDirectlySharedFragments(spicedb, currentSubject);
+            const newFragments = sharedFragmentIds.filter((id) => !seenSharedFragments.has(id));
+
+            if (newFragments.length > 0) {
+              // Look up who shared each (limit to 5 to avoid excessive reads)
+              const notifyItems: string[] = [];
+              for (const fid of newFragments.slice(0, 5)) {
+                const sharer = await lookupFragmentSharer(spicedb, fid);
+                const sharerLabel = sharer ? `${sharer.type}:${sharer.id}` : "unknown";
+                notifyItems.push(`- [from ${sharerLabel}] ${fid}`);
+              }
+              if (newFragments.length > 5) {
+                notifyItems.push(`- ... and ${newFragments.length - 5} more`);
+              }
+
+              sharedNotification =
+                "\n\n<shared-memories-notification>\n" +
+                "New memories have been shared with you:\n" +
+                notifyItems.join("\n") + "\n" +
+                "Use memory_inbox for details, or memory_recall to search.\n" +
+                "</shared-memories-notification>";
+
+              api.logger.info?.(
+                `openclaw-memory-rebac: ${newFragments.length} new shared fragment(s) detected`,
+              );
+            }
+
+            // Update seen set with all current fragments
+            for (const id of sharedFragmentIds) seenSharedFragments.add(id);
+          } catch (err) {
+            api.logger.warn(`openclaw-memory-rebac: shared fragment detection failed: ${String(err)}`);
+          }
+
+          if (totalCount === 0) return { prependContext: toolHint + sharedNotification };
 
           const memoryContext = formatDualResults(longTermResults, sessionResults);
           api.logger.info?.(
@@ -551,7 +857,7 @@ const rebacMemoryPlugin = {
           );
 
           return {
-            prependContext: `${toolHint}\n\n<relevant-memories>\nThe following memories may be relevant:\n${memoryContext}\n</relevant-memories>`,
+            prependContext: `${toolHint}\n\n<relevant-memories>\nThe following memories may be relevant:\n${memoryContext}\n</relevant-memories>${sharedNotification}`,
           };
         } catch (err) {
           api.logger.warn(`openclaw-memory-rebac: recall failed: ${String(err)}`);

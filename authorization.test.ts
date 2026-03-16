@@ -14,7 +14,13 @@ import {
   deleteFragmentRelationships,
   canDeleteFragment,
   canWriteToGroup,
+  canViewFragment,
   ensureGroupMembership,
+  shareFragmentWith,
+  unshareFragmentFrom,
+  removeGroupMember,
+  lookupDirectlySharedFragments,
+  lookupFragmentSharer,
   type Subject,
 } from "./authorization.js";
 
@@ -50,5 +56,14 @@ describe("authorization", () => {
     expect(typeof canDeleteFragment).toBe("function");
     expect(typeof canWriteToGroup).toBe("function");
     expect(typeof ensureGroupMembership).toBe("function");
+  });
+
+  test("sharing authorization functions exist and have correct signatures", () => {
+    expect(typeof shareFragmentWith).toBe("function");
+    expect(typeof unshareFragmentFrom).toBe("function");
+    expect(typeof removeGroupMember).toBe("function");
+    expect(typeof canViewFragment).toBe("function");
+    expect(typeof lookupDirectlySharedFragments).toBe("function");
+    expect(typeof lookupFragmentSharer).toBe("function");
   });
 });

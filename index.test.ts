@@ -122,16 +122,19 @@ describe("openclaw-memory-rebac plugin", () => {
     expect(plugin.default.kind).toBe("memory");
   });
 
-  test("registers 4 tools: memory_recall, memory_store, memory_forget, memory_status", async () => {
+  test("registers 7 tools: memory_recall, memory_store, memory_forget, memory_status, memory_share, memory_unshare, memory_inbox", async () => {
     const plugin = await import("./index.js");
     await plugin.default.register(mockApi);
 
-    expect(registeredTools).toHaveLength(4);
+    expect(registeredTools).toHaveLength(7);
     expect(registeredTools.map((t) => t.name)).toEqual([
       "memory_recall",
       "memory_store",
       "memory_forget",
       "memory_status",
+      "memory_share",
+      "memory_unshare",
+      "memory_inbox",
     ]);
   });
 
@@ -454,6 +457,260 @@ describe("openclaw-memory-rebac plugin", () => {
 
     expect(result.content[0].text).toContain("Entities cannot be deleted directly");
     expect(result.details.action).toBe("error");
+  });
+
+  // ==========================================================================
+
+  // ==========================================================================
+  // memory_share tests
+  // ==========================================================================
+
+  test("memory_share requires exactly one of fragment_id or group_id", async () => {
+    const plugin = await import("./index.js");
+    await plugin.default.register(mockApi);
+
+    const shareTool = registeredTools.find((t) => t.name === "memory_share");
+
+    // Neither provided
+    const result1 = await shareTool.execute("call-1", { target_id: "bob" });
+    expect(result1.content[0].text).toContain("exactly one");
+    expect(result1.details.action).toBe("error");
+
+    // Both provided
+    const result2 = await shareTool.execute("call-2", {
+      target_id: "bob",
+      fragment_id: "fact:test-uuid",
+      group_id: "main",
+    });
+    expect(result2.content[0].text).toContain("exactly one");
+  });
+
+  test("memory_share shares a fragment by writing involves relationship", async () => {
+    const { v1 } = await import("@authzed/authzed-node");
+    const mockClient = v1.NewClient();
+
+    // checkPermission returns HAS_PERMISSION (canViewFragment)
+    mockClient.promises.checkPermission = vi.fn().mockResolvedValue({
+      permissionship: 2,
+    });
+
+    const plugin = await import("./index.js");
+    await plugin.default.register(mockApi);
+
+    const shareTool = registeredTools.find((t) => t.name === "memory_share");
+    const result = await shareTool.execute("call-1", {
+      target_id: "bob",
+      target_type: "agent",
+      fragment_id: "fact:test-uuid-123",
+    });
+
+    expect(result.content[0].text).toContain("Shared memory");
+    expect(result.content[0].text).toContain("agent:bob");
+    expect(result.details.action).toBe("shared");
+    expect(mockClient.promises.writeRelationships).toHaveBeenCalled();
+  });
+
+  test("memory_share adds target to group when group_id provided", async () => {
+    const { v1 } = await import("@authzed/authzed-node");
+    const mockClient = v1.NewClient();
+
+    // checkPermission returns HAS_PERMISSION (canWriteToGroup)
+    mockClient.promises.checkPermission = vi.fn().mockResolvedValue({
+      permissionship: 2,
+    });
+
+    const plugin = await import("./index.js");
+    await plugin.default.register(mockApi);
+
+    const shareTool = registeredTools.find((t) => t.name === "memory_share");
+    const result = await shareTool.execute("call-1", {
+      target_id: "bob",
+      target_type: "person",
+      group_id: "main",
+    });
+
+    expect(result.content[0].text).toContain("Added person:bob");
+    expect(result.content[0].text).toContain('group "main"');
+    expect(result.details.action).toBe("shared");
+  });
+
+  test("memory_share denies when fragment not viewable", async () => {
+    const { v1 } = await import("@authzed/authzed-node");
+    const mockClient = v1.NewClient();
+
+    // No permissions and no groups
+    mockClient.promises.checkPermission = vi.fn().mockResolvedValue({
+      permissionship: 1,
+    });
+    mockClient.promises.lookupResources = vi.fn().mockResolvedValue([]);
+
+    const plugin = await import("./index.js");
+    await plugin.default.register(mockApi);
+
+    const shareTool = registeredTools.find((t) => t.name === "memory_share");
+    const result = await shareTool.execute("call-1", {
+      target_id: "bob",
+      fragment_id: "fact:secret-uuid",
+    });
+
+    expect(result.content[0].text).toContain("Permission denied");
+    expect(result.details.action).toBe("denied");
+  });
+
+  // ==========================================================================
+  // memory_unshare tests
+  // ==========================================================================
+
+  test("memory_unshare requires exactly one of fragment_id or group_id", async () => {
+    const plugin = await import("./index.js");
+    await plugin.default.register(mockApi);
+
+    const unshareTool = registeredTools.find((t) => t.name === "memory_unshare");
+    const result = await unshareTool.execute("call-1", { target_id: "bob" });
+    expect(result.content[0].text).toContain("exactly one");
+  });
+
+  test("memory_unshare revokes fragment sharing", async () => {
+    const { v1 } = await import("@authzed/authzed-node");
+    const mockClient = v1.NewClient();
+
+    // canDeleteFragment returns HAS_PERMISSION
+    mockClient.promises.checkPermission = vi.fn().mockResolvedValue({
+      permissionship: 2,
+    });
+
+    const plugin = await import("./index.js");
+    await plugin.default.register(mockApi);
+
+    const unshareTool = registeredTools.find((t) => t.name === "memory_unshare");
+    const result = await unshareTool.execute("call-1", {
+      target_id: "bob",
+      target_type: "agent",
+      fragment_id: "fact:test-uuid",
+    });
+
+    expect(result.content[0].text).toContain("Unshared memory");
+    expect(result.details.action).toBe("unshared");
+    expect(mockClient.promises.writeRelationships).toHaveBeenCalled();
+  });
+
+  test("memory_unshare removes member from group", async () => {
+    const { v1 } = await import("@authzed/authzed-node");
+    const mockClient = v1.NewClient();
+
+    mockClient.promises.checkPermission = vi.fn().mockResolvedValue({
+      permissionship: 2,
+    });
+
+    const plugin = await import("./index.js");
+    await plugin.default.register(mockApi);
+
+    const unshareTool = registeredTools.find((t) => t.name === "memory_unshare");
+    const result = await unshareTool.execute("call-1", {
+      target_id: "bob",
+      group_id: "main",
+    });
+
+    expect(result.content[0].text).toContain("Removed");
+    expect(result.content[0].text).toContain("agent:bob");
+    expect(result.details.action).toBe("unshared");
+  });
+
+  // ==========================================================================
+  // memory_inbox tests
+  // ==========================================================================
+
+  test("memory_inbox returns empty when no shared fragments", async () => {
+    const { v1 } = await import("@authzed/authzed-node");
+    const mockClient = v1.NewClient();
+
+    mockClient.promises.readRelationships = vi.fn().mockResolvedValue([]);
+
+    const plugin = await import("./index.js");
+    await plugin.default.register(mockApi);
+
+    const inboxTool = registeredTools.find((t) => t.name === "memory_inbox");
+    const result = await inboxTool.execute("call-1", {});
+
+    expect(result.content[0].text).toContain("No memories have been shared");
+    expect(result.details.count).toBe(0);
+  });
+
+  test("memory_inbox returns shared fragments with sharer info", async () => {
+    const { v1 } = await import("@authzed/authzed-node");
+    const mockClient = v1.NewClient();
+
+    let readCallCount = 0;
+    mockClient.promises.readRelationships = vi.fn().mockImplementation(() => {
+      readCallCount++;
+      if (readCallCount === 1) {
+        // lookupDirectlySharedFragments — return involves tuples
+        return Promise.resolve([
+          {
+            relationship: {
+              resource: { objectType: "memory_fragment", objectId: "frag-1" },
+              relation: "involves",
+              subject: { object: { objectType: "agent", objectId: "current" } },
+            },
+          },
+        ]);
+      }
+      // lookupFragmentSharer — return shared_by tuple
+      return Promise.resolve([
+        {
+          relationship: {
+            resource: { objectType: "memory_fragment", objectId: "frag-1" },
+            relation: "shared_by",
+            subject: { object: { objectType: "agent", objectId: "alice" } },
+          },
+        },
+      ]);
+    });
+
+    const plugin = await import("./index.js");
+    await plugin.default.register(mockApi);
+
+    const inboxTool = registeredTools.find((t) => t.name === "memory_inbox");
+    const result = await inboxTool.execute("call-1", {});
+
+    expect(result.details.count).toBe(1);
+    expect(result.content[0].text).toContain("agent:alice");
+    expect(result.content[0].text).toContain("frag-1");
+  });
+
+  test("memory_share tool has correct parameters", async () => {
+    const plugin = await import("./index.js");
+    await plugin.default.register(mockApi);
+
+    const shareTool = registeredTools.find((t) => t.name === "memory_share");
+    expect(shareTool).toBeDefined();
+    expect(shareTool.label).toBe("Memory Share");
+    expect(shareTool.parameters.properties.target_id).toBeDefined();
+    expect(shareTool.parameters.properties.target_type).toBeDefined();
+    expect(shareTool.parameters.properties.fragment_id).toBeDefined();
+    expect(shareTool.parameters.properties.group_id).toBeDefined();
+  });
+
+  test("memory_unshare tool has correct parameters", async () => {
+    const plugin = await import("./index.js");
+    await plugin.default.register(mockApi);
+
+    const unshareTool = registeredTools.find((t) => t.name === "memory_unshare");
+    expect(unshareTool).toBeDefined();
+    expect(unshareTool.label).toBe("Memory Unshare");
+    expect(unshareTool.parameters.properties.target_id).toBeDefined();
+    expect(unshareTool.parameters.properties.fragment_id).toBeDefined();
+    expect(unshareTool.parameters.properties.group_id).toBeDefined();
+  });
+
+  test("memory_inbox tool has correct parameters", async () => {
+    const plugin = await import("./index.js");
+    await plugin.default.register(mockApi);
+
+    const inboxTool = registeredTools.find((t) => t.name === "memory_inbox");
+    expect(inboxTool).toBeDefined();
+    expect(inboxTool.label).toBe("Memory Inbox");
+    expect(inboxTool.parameters.properties.limit).toBeDefined();
   });
 
   // ==========================================================================
