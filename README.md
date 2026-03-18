@@ -213,6 +213,41 @@ Session groups (`session-<id>`) provide per-conversation memory isolation:
 - Other agents cannot read or write to foreign session groups without explicit membership
 - Session memories are searchable within the session scope and are deduplicated against long-term memories
 
+### Per-Agent Identity
+
+When multiple agents share a single OpenClaw gateway, each agent gets its own SpiceDB identity. Tools and lifecycle hooks derive the subject from the runtime `agentId` — so `agent:stenographer` and `agent:main` write memories with distinct `shared_by` relationships, even though they run through the same plugin instance.
+
+If `agentId` is not available in the runtime context (e.g., older OpenClaw versions or standalone CLI use), the plugin falls back to the config-level `subjectType`/`subjectId`.
+
+Session state (session IDs and SpiceDB consistency tokens) is also tracked per agent, so agents don't interfere with each other's sessions.
+
+### Identity Linking
+
+The `identities` config field connects agents to the people they represent. This is essential for **cross-agent recall** — finding memories stored by one agent that involve a person represented by a different agent.
+
+```json
+{
+  "identities": {
+    "main": "U0123ABC",
+    "work": "U0456DEF"
+  }
+}
+```
+
+Each entry maps an agent ID to a person ID (typically a Slack user ID or other external identifier). At plugin startup, the plugin writes `agent:<agentId> #owner person:<personId>` relationships to SpiceDB.
+
+**How cross-agent recall works:**
+
+1. Agent A stores a memory with `involves: ["U0123ABC"]`
+2. Later, agent B (configured as `"main": "U0123ABC"`) calls `memory_recall`
+3. The plugin resolves `agent:main` → `person:U0123ABC` via SpiceDB
+4. It discovers the memory because `person:U0123ABC` is in `involves`
+5. The memory is returned alongside group-based results
+
+This means a user's personal agent can discover memories stored by service agents (like a meeting recorder or Slack observer), as long as the user was a participant. The service agent retains `shared_by` ownership (and exclusive delete permission), while involved people get view access through their own agents.
+
+Agents without an `identities` entry (like service agents) are not linked to any person and cannot be resolved through identity chains. This is intentional — a service agent acts on its own behalf, not on behalf of a human.
+
 ## Configuration Reference
 
 | Key | Type | Default | Description |
@@ -227,7 +262,8 @@ Session groups (`session-<id>`) provide per-conversation memory isolation:
 | `graphiti.uuidPollMaxAttempts` | integer | `60` | Max polling attempts (total timeout = interval x attempts) |
 | `graphiti.requestTimeoutMs` | integer | `30000` | HTTP request timeout for Graphiti REST calls (ms) |
 | `subjectType` | string | `agent` | SpiceDB subject type (`agent` or `person`) |
-| `subjectId` | string | `default` | SpiceDB subject ID (supports `${ENV_VAR}`) |
+| `subjectId` | string | `default` | Fallback SpiceDB subject ID when agentId is unavailable (supports `${ENV_VAR}`) |
+| `identities` | object | `{}` | Maps agent IDs to owner person IDs for cross-agent recall (see [Identity Linking](#identity-linking)) |
 | `autoCapture` | boolean | `true` | Auto-capture conversations |
 | `autoRecall` | boolean | `true` | Auto-inject relevant memories |
 | `customInstructions` | string | *(see below)* | Custom extraction instructions |
@@ -340,6 +376,9 @@ OpenClaw has an exclusive `memory` slot — only one memory plugin is active at 
           },
           "subjectType": "agent",
           "subjectId": "my-agent",
+          "identities": {
+            "my-agent": "U0123ABC"
+          },
           "autoCapture": true,
           "autoRecall": true
         }

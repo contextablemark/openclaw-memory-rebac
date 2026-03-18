@@ -134,6 +134,9 @@ Add the plugin to your OpenClaw configuration:
           },
           "subjectType": "agent",
           "subjectId": "my-agent",
+          "identities": {
+            "my-agent": "U0123ABC"
+          },
           "autoCapture": true,
           "autoRecall": true
         }
@@ -151,7 +154,8 @@ Add the plugin to your OpenClaw configuration:
 |-----|------|---------|-------------|
 | `backend` | `"graphiti"` | `"graphiti"` | Storage backend |
 | `subjectType` | `"agent"` \| `"person"` | `"agent"` | SpiceDB subject type for the current user |
-| `subjectId` | string | `"default"` | SpiceDB subject ID (supports `${ENV_VAR}`) |
+| `subjectId` | string | `"default"` | Fallback SpiceDB subject ID when agentId is unavailable (supports `${ENV_VAR}`) |
+| `identities` | `Record<string, string>` | `{}` | Maps agent IDs to owner person IDs for cross-agent recall |
 | `autoCapture` | boolean | `true` | Capture conversations after each agent turn |
 | `autoRecall` | boolean | `true` | Inject memories before each agent turn |
 | `customInstructions` | string | *(see below)* | Extraction instructions sent to the LLM |
@@ -197,6 +201,39 @@ Override this to tune extraction for your domain. For example, a medical assista
   "customInstructions": "Extract: patient symptoms, diagnoses, medications, allergies, procedures, provider names, appointment dates. Do not extract: greetings, small talk."
 }
 ```
+
+### Per-Agent Identity
+
+When multiple agents share a gateway, each agent automatically gets its own SpiceDB identity derived from its runtime `agentId`. The `subjectType`/`subjectId` config fields serve as a fallback for contexts where `agentId` is not available (standalone CLI, older OpenClaw versions).
+
+This means you generally do **not** need to set `subjectId` to match a specific agent — the plugin handles it automatically at runtime.
+
+### Identity Linking (`identities`)
+
+The `identities` field connects agents to the people they represent, enabling cross-agent recall. Each key is an agent ID, and each value is a person ID (typically a Slack user ID or other external identifier):
+
+```json
+{
+  "identities": {
+    "main": "U0123ABC",
+    "work": "U0456DEF"
+  }
+}
+```
+
+At startup, the plugin writes `agent:<agentId> #owner person:<personId>` relationships to SpiceDB. When an agent calls `memory_recall`, the plugin also looks up the agent's owner and searches for memories where that person is in `involves` — enabling the agent to discover memories stored by other agents about its owner.
+
+**When to use this:**
+- You have multiple agents and want a user's personal agent to find memories from service agents (stenographers, meeting recorders, etc.)
+- You use the `involves` parameter in `memory_store` to tag people in memories
+- You want cross-channel recall — e.g., decisions made in Slack discovered via WhatsApp
+
+**When you don't need this:**
+- Single-agent deployments
+- All agents share the same group memberships (group-based recall already works)
+- You don't use the `involves` parameter
+
+Agents without an entry in `identities` (like service agents) are not linked to any person. This is intentional — they act on their own behalf, not on behalf of a human.
 
 ### Environment Variable Interpolation
 
