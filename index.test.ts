@@ -90,8 +90,13 @@ describe("openclaw-memory-rebac plugin", () => {
           defaultGroupId: "main",
         },
       },
-      registerTool: vi.fn((tool) => {
-        registeredTools.push(tool);
+      registerTool: vi.fn((toolOrFactory, _meta?: unknown) => {
+        if (typeof toolOrFactory === "function") {
+          // Tool factory pattern: invoke with mock context to get the tool object
+          registeredTools.push(toolOrFactory({ agentId: "test-agent" }));
+        } else {
+          registeredTools.push(toolOrFactory);
+        }
       }),
       registerCli: vi.fn((handler) => {
         registeredClis.push(handler);
@@ -454,6 +459,266 @@ describe("openclaw-memory-rebac plugin", () => {
 
     expect(result.content[0].text).toContain("Entities cannot be deleted directly");
     expect(result.details.action).toBe("error");
+  });
+
+  // ==========================================================================
+  // Per-agent identity tests
+  // ==========================================================================
+
+  test("tool factory uses agentId from context for subject identity", async () => {
+    const { v1 } = await import("@authzed/authzed-node");
+    const mockClient = v1.NewClient();
+
+    // Track what subject is used in checkPermission calls
+    const checkCalls: unknown[] = [];
+    mockClient.promises.checkPermission = vi.fn().mockImplementation((req: unknown) => {
+      checkCalls.push(req);
+      return Promise.resolve({ permissionship: 2 }); // HAS_PERMISSION
+    });
+
+    mockFetch.mockImplementation((url: string) => {
+      if (url.includes("/episode/")) {
+        return Promise.resolve({
+          ok: true,
+          headers: new Headers({ "content-type": "application/json" }),
+          json: () => Promise.resolve({ success: true }),
+        });
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+    });
+
+    const plugin = await import("./index.js");
+
+    // Register with a custom mock that invokes factory with specific agentId
+    const toolsByAgent: Record<string, ReturnType<typeof vi.fn>[]> = {};
+    const agentApi = {
+      ...mockApi,
+      registerTool: vi.fn((toolOrFactory: unknown, _meta?: unknown) => {
+        if (typeof toolOrFactory === "function") {
+          // Register tools for "stenographer" agent
+          const tool = (toolOrFactory as Function)({ agentId: "stenographer" });
+          if (!toolsByAgent["stenographer"]) toolsByAgent["stenographer"] = [];
+          toolsByAgent["stenographer"].push(tool);
+        }
+      }),
+    };
+
+    await plugin.default.register(agentApi);
+
+    // The forget tool for "stenographer" should use agent:stenographer as subject
+    const forgetTool = toolsByAgent["stenographer"]?.find((t: { name: string }) => t.name === "memory_forget");
+    expect(forgetTool).toBeDefined();
+
+    await forgetTool.execute("call-1", { id: "fact:test-uuid" });
+
+    // checkPermission should have been called with subject type "agent" and id "stenographer"
+    expect(checkCalls.length).toBeGreaterThan(0);
+  });
+
+  test("tool factory falls back to config subject when agentId is absent", async () => {
+    const plugin = await import("./index.js");
+
+    // Register with undefined agentId
+    const noAgentTools: ReturnType<typeof vi.fn>[] = [];
+    const noAgentApi = {
+      ...mockApi,
+      registerTool: vi.fn((toolOrFactory: unknown, _meta?: unknown) => {
+        if (typeof toolOrFactory === "function") {
+          const tool = (toolOrFactory as Function)({ agentId: undefined });
+          noAgentTools.push(tool);
+        }
+      }),
+    };
+
+    await plugin.default.register(noAgentApi);
+
+    const statusTool = noAgentTools.find((t: { name: string }) => t.name === "memory_status");
+    expect(statusTool).toBeDefined();
+    expect(statusTool.name).toBe("memory_status");
+  });
+
+  // ==========================================================================
+  // Identity linking tests
+  // ==========================================================================
+
+  test("service.start() writes agent→owner relationships from identities config", async () => {
+    const { v1 } = await import("@authzed/authzed-node");
+    const mockClient = v1.NewClient();
+
+    const writeRelCalls: unknown[] = [];
+    mockClient.promises.writeRelationships = vi.fn().mockImplementation((req: unknown) => {
+      writeRelCalls.push(req);
+      return Promise.resolve({ writtenAt: { token: "write-token-identity" } });
+    });
+
+    const plugin = await import("./index.js");
+    const identityApi = {
+      ...mockApi,
+      pluginConfig: {
+        ...mockApi.pluginConfig,
+        identities: {
+          main: "U0123ABC",
+          work: "U0456DEF",
+        },
+      },
+    };
+
+    await plugin.default.register(identityApi);
+    const service = registeredServices[0];
+    await service.start();
+
+    // Should have logged the identity links
+    expect(logs.some(log => log.includes("linked agent:main") && log.includes("person:U0123ABC"))).toBe(true);
+    expect(logs.some(log => log.includes("linked agent:work") && log.includes("person:U0456DEF"))).toBe(true);
+  });
+
+  test("service.start() handles empty identities config gracefully", async () => {
+    const plugin = await import("./index.js");
+    // Default config has no identities
+    await plugin.default.register(mockApi);
+    const service = registeredServices[0];
+
+    // Should not throw
+    await service.start();
+
+    // No identity-link logs
+    expect(logs.some(log => log.includes("linked agent:"))).toBe(false);
+  });
+
+  // ==========================================================================
+  // Owner-aware recall tests
+  // ==========================================================================
+
+  test("memory_recall includes fragments viewable by agent's owner", async () => {
+    const { v1 } = await import("@authzed/authzed-node");
+    const mockClient = v1.NewClient();
+
+    // lookupResources: first call for authorized groups, later for viewable fragments
+    let lookupCallCount = 0;
+    mockClient.promises.lookupResources = vi.fn().mockImplementation(() => {
+      lookupCallCount++;
+      if (lookupCallCount === 1) {
+        // lookupAuthorizedGroups → agent has access to "main" group
+        return Promise.resolve([{ resourceObjectId: "main" }]);
+      }
+      // lookupViewableFragments → owner can view extra fragments
+      return Promise.resolve([
+        { resourceObjectId: "owner-fragment-1" },
+        { resourceObjectId: "owner-fragment-2" },
+      ]);
+    });
+
+    // readRelationships → agent has an owner (must match @authzed/authzed-node response shape)
+    mockClient.promises.readRelationships = vi.fn().mockResolvedValue([
+      {
+        relationship: {
+          resource: { objectType: "agent", objectId: "test-agent" },
+          relation: "owner",
+          subject: { object: { objectType: "person", objectId: "U0123ABC" } },
+        },
+      },
+    ]);
+
+    // Mock backend search + fragment fetch
+    mockFetch.mockImplementation((url: string) => {
+      if (url.includes("/search")) {
+        return Promise.resolve({
+          ok: true,
+          headers: new Headers({ "content-type": "application/json" }),
+          json: () => Promise.resolve({
+            facts: [
+              { uuid: "group-fact-1", name: "Group fact", fact: "From group search", created_at: "2026-01-01T00:00:00Z" },
+            ],
+          }),
+        });
+      }
+      if (url.includes("/entity-edge/owner-fragment-1")) {
+        return Promise.resolve({
+          ok: true,
+          headers: new Headers({ "content-type": "application/json" }),
+          json: () => Promise.resolve({
+            uuid: "owner-fragment-1", name: "Owner fact 1", fact: "Decision about widget", created_at: "2026-01-02T00:00:00Z",
+          }),
+        });
+      }
+      if (url.includes("/entity-edge/owner-fragment-2")) {
+        return Promise.resolve({
+          ok: true,
+          headers: new Headers({ "content-type": "application/json" }),
+          json: () => Promise.resolve({
+            uuid: "owner-fragment-2", name: "Owner fact 2", fact: "Decision about database", created_at: "2026-01-03T00:00:00Z",
+          }),
+        });
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+    });
+
+    const plugin = await import("./index.js");
+    await plugin.default.register(mockApi);
+
+    const recallTool = registeredTools.find((t) => t.name === "memory_recall");
+    const result = await recallTool.execute("call-1", { query: "widget decisions" });
+
+    // Should include both group results and owner fragment results
+    expect(result.details.count).toBe(3);
+    expect(result.details.ownerFragmentCount).toBe(2);
+    expect(result.details.memories.some((m: { uuid: string }) => m.uuid === "owner-fragment-1")).toBe(true);
+    expect(result.details.memories.some((m: { uuid: string }) => m.uuid === "owner-fragment-2")).toBe(true);
+  });
+
+  test("memory_recall skips owner lookup when subject is not an agent", async () => {
+    const { v1 } = await import("@authzed/authzed-node");
+    const mockClient = v1.NewClient();
+
+    mockClient.promises.lookupResources = vi.fn().mockResolvedValue([
+      { resourceObjectId: "main" },
+    ]);
+
+    // Reset readRelationships to track only calls from this test
+    mockClient.promises.readRelationships = vi.fn().mockResolvedValue([]);
+
+    mockFetch.mockImplementation((url: string) => {
+      if (url.includes("/search")) {
+        return Promise.resolve({
+          ok: true,
+          headers: new Headers({ "content-type": "application/json" }),
+          json: () => Promise.resolve({ facts: [] }),
+        });
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+    });
+
+    const plugin = await import("./index.js");
+
+    // Register with person subject (no agentId) — forces config fallback
+    const personTools: ReturnType<typeof vi.fn>[] = [];
+    const personApi = {
+      ...mockApi,
+      pluginConfig: {
+        ...mockApi.pluginConfig,
+        subjectType: "person",
+        subjectId: "U0123ABC",
+      },
+      registerTool: vi.fn((toolOrFactory: unknown, _meta?: unknown) => {
+        if (typeof toolOrFactory === "function") {
+          // No agentId → falls back to config person subject
+          const tool = (toolOrFactory as Function)({ agentId: undefined });
+          personTools.push(tool);
+        }
+      }),
+      registerCli: mockApi.registerCli,
+      registerService: mockApi.registerService,
+      on: mockApi.on,
+      logger: mockApi.logger,
+    };
+
+    await plugin.default.register(personApi);
+
+    const recallTool = personTools.find((t: { name: string }) => t.name === "memory_recall");
+    const result = await recallTool.execute("call-1", { query: "test" });
+
+    // readRelationships should NOT have been called (no owner lookup for person subjects)
+    expect(mockClient.promises.readRelationships).not.toHaveBeenCalled();
   });
 
   // ==========================================================================

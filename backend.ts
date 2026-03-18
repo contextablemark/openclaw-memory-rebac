@@ -163,6 +163,13 @@ export interface MemoryBackend {
   deleteFragment?(uuid: string, type?: string): Promise<boolean>;
 
   /**
+   * Fetch fragment details by their IDs.
+   * Used for fragment-level recall (e.g., finding memories via `involves` permissions).
+   * Optional: not all backends support fetching individual fragments by ID.
+   */
+  getFragmentsByIds?(ids: string[]): Promise<SearchResult[]>;
+
+  /**
    * Discover fragment (fact/edge) UUIDs that were extracted from a stored episode.
    * Called after store() resolves the episode ID to write per-fragment SpiceDB
    * relationships with the correct fact-level UUIDs.

@@ -56,6 +56,25 @@ export async function lookupAuthorizedGroups(
 }
 
 /**
+ * Look up the owner person ID for an agent.
+ * Returns undefined if no owner relationship exists.
+ */
+export async function lookupAgentOwner(
+  spicedb: SpiceDbClient,
+  agentId: string,
+  zedToken?: string,
+): Promise<string | undefined> {
+  const tuples = await spicedb.readRelationships({
+    resourceType: "agent",
+    resourceId: agentId,
+    relation: "owner",
+    consistency: tokenConsistency(zedToken),
+  });
+  const ownerTuple = tuples.find((t) => t.subjectType === "person");
+  return ownerTuple?.subjectId;
+}
+
+/**
  * Look up all memory fragment IDs that a subject can view.
  * Used for fine-grained post-filtering when needed.
  */

@@ -10,6 +10,10 @@
  * Authorization is enforced at the data layer, not in prompts.
  *
  * Backend currently uses Graphiti for knowledge graph storage.
+ *
+ * Per-agent identity: tools and hooks derive the SpiceDB subject from
+ * the runtime agentId (OpenClawPluginToolContext / PluginHookAgentContext),
+ * falling back to config-level subjectType/subjectId when agentId is absent.
  */
 
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
@@ -23,6 +27,8 @@ import { rebacMemoryConfigSchema, createBackend, defaultGroupId } from "./config
 import { SpiceDbClient } from "./spicedb.js";
 import {
   lookupAuthorizedGroups,
+  lookupViewableFragments,
+  lookupAgentOwner,
   writeFragmentRelationships,
   deleteFragmentRelationships,
   canDeleteFragment,
@@ -49,6 +55,15 @@ function sessionGroupId(sessionId: string): string {
 function isSessionGroup(groupId: string): boolean {
   return groupId.startsWith("session-");
 }
+
+// ============================================================================
+// Per-agent state
+// ============================================================================
+
+type AgentState = {
+  sessionId?: string;
+  lastWriteToken?: string;
+};
 
 // ============================================================================
 // Plugin Definition
@@ -91,21 +106,40 @@ const rebacMemoryPlugin = {
     }, 10_000);
     grpcGuardTimer.unref();
 
-    const currentSubject: Subject = { type: cfg.subjectType, id: cfg.subjectId };
+    // Per-agent state: keyed by agentId (falls back to cfg.subjectId)
+    const agentStates = new Map<string, AgentState>();
 
-    let currentSessionId: string | undefined;
-    let lastWriteToken: string | undefined;
+    function resolveSubject(agentId?: string): Subject {
+      if (agentId) return { type: "agent", id: agentId };
+      return { type: cfg.subjectType, id: cfg.subjectId };
+    }
+
+    function getState(agentId?: string): AgentState {
+      const key = agentId ?? cfg.subjectId;
+      let state = agentStates.get(key);
+      if (!state) {
+        state = {};
+        agentStates.set(key, state);
+      }
+      return state;
+    }
+
+    // Convenience: read state from the config-level default
+    // (used by service start and CLI where no agentId is available)
+    function getDefaultState(): AgentState {
+      return getState(undefined);
+    }
 
     api.logger.info(
       `openclaw-memory-rebac: registered (backend: ${backend.name}, spicedb: ${cfg.spicedb.endpoint})`,
     );
 
     // ========================================================================
-    // Tools
+    // Tools (registered as factories for per-agent identity)
     // ========================================================================
 
     api.registerTool(
-      {
+      (ctx) => ({
         name: "memory_recall",
         label: "Memory Recall",
         description:
@@ -127,14 +161,10 @@ const rebacMemoryPlugin = {
             scope?: "session" | "long-term" | "all";
           };
 
-          const authorizedGroups = await lookupAuthorizedGroups(spicedb, currentSubject, lastWriteToken);
+          const subject = resolveSubject(ctx.agentId);
+          const state = getState(ctx.agentId);
 
-          if (authorizedGroups.length === 0) {
-            return {
-              content: [{ type: "text", text: "No accessible memory groups found." }],
-              details: { count: 0, authorizedGroups: [] },
-            };
-          }
+          const authorizedGroups = await lookupAuthorizedGroups(spicedb, subject, state.lastWriteToken);
 
           let longTermGroups: string[];
           let sessionGroups: string[];
@@ -142,8 +172,8 @@ const rebacMemoryPlugin = {
           if (scope === "session") {
             longTermGroups = [];
             sessionGroups = authorizedGroups.filter(isSessionGroup);
-            if (currentSessionId) {
-              const sg = sessionGroupId(currentSessionId);
+            if (state.sessionId) {
+              const sg = sessionGroupId(state.sessionId);
               if (!sessionGroups.includes(sg)) sessionGroups.push(sg);
             }
           } else if (scope === "long-term") {
@@ -152,19 +182,20 @@ const rebacMemoryPlugin = {
           } else {
             longTermGroups = authorizedGroups.filter((g) => !isSessionGroup(g));
             sessionGroups = authorizedGroups.filter(isSessionGroup);
-            if (currentSessionId) {
-              const sg = sessionGroupId(currentSessionId);
+            if (state.sessionId) {
+              const sg = sessionGroupId(state.sessionId);
               if (!sessionGroups.includes(sg)) sessionGroups.push(sg);
             }
           }
 
+          // Group-based search (existing path)
           const [longTermResults, rawSessionResults] = await Promise.all([
             longTermGroups.length > 0
               ? searchAuthorizedMemories(backend, {
                   query,
                   groupIds: longTermGroups,
                   limit,
-                  sessionId: currentSessionId,
+                  sessionId: state.sessionId,
                 })
               : Promise.resolve([]),
             sessionGroups.length > 0
@@ -172,13 +203,38 @@ const rebacMemoryPlugin = {
                   query,
                   groupIds: sessionGroups,
                   limit,
-                  sessionId: currentSessionId,
+                  sessionId: state.sessionId,
                 })
               : Promise.resolve([]),
           ]);
 
           const sessionResults = deduplicateSessionResults(longTermResults, rawSessionResults);
-          const totalCount = longTermResults.length + sessionResults.length;
+          const groupResults = [...longTermResults, ...sessionResults];
+
+          // Owner-aware fragment search: if the subject is an agent with an owner,
+          // also find fragments where the owner is in `involves`.
+          let ownerFragmentResults: typeof groupResults = [];
+          if (subject.type === "agent" && backend.getFragmentsByIds) {
+            try {
+              const ownerId = await lookupAgentOwner(spicedb, subject.id, state.lastWriteToken);
+              if (ownerId) {
+                const ownerSubject: Subject = { type: "person", id: ownerId };
+                const viewableIds = await lookupViewableFragments(spicedb, ownerSubject, state.lastWriteToken);
+                if (viewableIds.length > 0) {
+                  const groupResultIds = new Set(groupResults.map((r) => r.uuid));
+                  const newIds = viewableIds.filter((id) => !groupResultIds.has(id));
+                  if (newIds.length > 0) {
+                    ownerFragmentResults = await backend.getFragmentsByIds(newIds);
+                  }
+                }
+              }
+            } catch (err) {
+              api.logger.warn(`openclaw-memory-rebac: owner-aware recall failed: ${String(err)}`);
+            }
+          }
+
+          const allResults = [...groupResults, ...ownerFragmentResults];
+          const totalCount = allResults.length;
 
           if (totalCount === 0) {
             return {
@@ -187,8 +243,9 @@ const rebacMemoryPlugin = {
             };
           }
 
-          const text = formatDualResults(longTermResults, sessionResults);
-          const allResults = [...longTermResults, ...sessionResults];
+          const text = ownerFragmentResults.length > 0
+            ? formatDualResults(groupResults, ownerFragmentResults)
+            : formatDualResults(longTermResults, sessionResults);
           const sanitized = allResults.map((r) => ({
             type: r.type,
             uuid: r.uuid,
@@ -205,15 +262,16 @@ const rebacMemoryPlugin = {
               authorizedGroups,
               longTermCount: longTermResults.length,
               sessionCount: sessionResults.length,
+              ownerFragmentCount: ownerFragmentResults.length,
             },
           };
         },
-      },
+      }),
       { name: "memory_recall" },
     );
 
     api.registerTool(
-      {
+      (ctx) => ({
         name: "memory_store",
         label: "Memory Store",
         description:
@@ -248,6 +306,9 @@ const rebacMemoryPlugin = {
             longTerm?: boolean;
           };
 
+          const subject = resolveSubject(ctx.agentId);
+          const state = getState(ctx.agentId);
+
           const sanitizeGroupId = (id?: string): string | undefined => {
             if (!id) return undefined;
             const trimmed = id.trim();
@@ -261,26 +322,26 @@ const rebacMemoryPlugin = {
           const sanitizedGroupId = sanitizeGroupId(group_id);
           if (sanitizedGroupId) {
             targetGroupId = sanitizedGroupId;
-          } else if (!longTerm && currentSessionId) {
-            targetGroupId = sessionGroupId(currentSessionId);
+          } else if (!longTerm && state.sessionId) {
+            targetGroupId = sessionGroupId(state.sessionId);
           } else {
             targetGroupId = backendDefaultGroupId;
           }
 
           const isOwnSession =
             isSessionGroup(targetGroupId) &&
-            currentSessionId != null &&
-            targetGroupId === sessionGroupId(currentSessionId);
+            state.sessionId != null &&
+            targetGroupId === sessionGroupId(state.sessionId);
 
           if (isOwnSession) {
             try {
-              const token = await ensureGroupMembership(spicedb, targetGroupId, currentSubject);
-              if (token) lastWriteToken = token;
+              const token = await ensureGroupMembership(spicedb, targetGroupId, subject);
+              if (token) state.lastWriteToken = token;
             } catch {
               api.logger.warn(`openclaw-memory-rebac: failed to ensure membership in ${targetGroupId}`);
             }
           } else {
-            const allowed = await canWriteToGroup(spicedb, currentSubject, targetGroupId, lastWriteToken);
+            const allowed = await canWriteToGroup(spicedb, subject, targetGroupId, state.lastWriteToken);
             if (!allowed) {
               return {
                 content: [{ type: "text", text: `Permission denied: cannot write to group "${targetGroupId}"` }],
@@ -313,10 +374,10 @@ const rebacMemoryPlugin = {
                   const writeToken = await writeFragmentRelationships(spicedb, {
                     fragmentId: factId,
                     groupId: targetGroupId,
-                    sharedBy: currentSubject,
+                    sharedBy: subject,
                     involves: involvedSubjects,
                   });
-                  if (writeToken) lastWriteToken = writeToken;
+                  if (writeToken) state.lastWriteToken = writeToken;
                 }
                 api.logger.info(
                   `openclaw-memory-rebac: wrote SpiceDB relationships for ${factIds.length} fact(s) from episode ${episodeId}`,
@@ -326,10 +387,10 @@ const rebacMemoryPlugin = {
                 const writeToken = await writeFragmentRelationships(spicedb, {
                   fragmentId: episodeId,
                   groupId: targetGroupId,
-                  sharedBy: currentSubject,
+                  sharedBy: subject,
                   involves: involvedSubjects,
                 });
-                if (writeToken) lastWriteToken = writeToken;
+                if (writeToken) state.lastWriteToken = writeToken;
               }
             })
             .catch((err) => {
@@ -349,12 +410,12 @@ const rebacMemoryPlugin = {
             },
           };
         },
-      },
+      }),
       { name: "memory_store" },
     );
 
     api.registerTool(
-      {
+      (ctx) => ({
         name: "memory_forget",
         label: "Memory Forget",
         description:
@@ -364,6 +425,9 @@ const rebacMemoryPlugin = {
         }),
         async execute(_toolCallId, params) {
           const { id } = params as { id: string };
+
+          const subject = resolveSubject(ctx.agentId);
+          const state = getState(ctx.agentId);
 
           // Parse optional type prefix — strip it to get the bare UUID
           const colonIdx = id.indexOf(":");
@@ -388,11 +452,11 @@ const rebacMemoryPlugin = {
           // Fragment-level relationships may be missing (episode UUID vs fact UUID mismatch),
           // so fall back to group-level authorization: if the subject can contribute to any
           // group they have access to, allow deletion.
-          let allowed = await canDeleteFragment(spicedb, currentSubject, uuid, lastWriteToken);
+          let allowed = await canDeleteFragment(spicedb, subject, uuid, state.lastWriteToken);
           if (!allowed) {
-            const groups = await lookupAuthorizedGroups(spicedb, currentSubject, lastWriteToken);
+            const groups = await lookupAuthorizedGroups(spicedb, subject, state.lastWriteToken);
             for (const g of groups) {
-              if (await canWriteToGroup(spicedb, currentSubject, g, lastWriteToken)) {
+              if (await canWriteToGroup(spicedb, subject, g, state.lastWriteToken)) {
                 allowed = true;
                 break;
               }
@@ -422,24 +486,25 @@ const rebacMemoryPlugin = {
 
           // Always de-authorize in SpiceDB
           const writeToken = await deleteFragmentRelationships(spicedb, uuid);
-          if (writeToken) lastWriteToken = writeToken;
+          if (writeToken) state.lastWriteToken = writeToken;
 
           return {
             content: [{ type: "text", text: "Memory forgotten." }],
             details: { action: "deleted", id, uuid },
           };
         },
-      },
+      }),
       { name: "memory_forget" },
     );
 
     api.registerTool(
-      {
+      (ctx) => ({
         name: "memory_status",
         label: "Memory Status",
         description: "Check the health of the memory backend and SpiceDB.",
         parameters: Type.Object({}),
         async execute() {
+          const state = getState(ctx.agentId);
           const backendStatus = await backend.getStatus();
 
           let spicedbOk = false;
@@ -454,13 +519,15 @@ const rebacMemoryPlugin = {
             ...backendStatus,
             spicedb: spicedbOk ? "connected" : "unreachable",
             endpoint_spicedb: cfg.spicedb.endpoint,
-            currentSessionId: currentSessionId ?? "none",
+            currentSessionId: state.sessionId ?? "none",
+            agentId: ctx.agentId ?? "default",
           };
 
           const statusText = [
             `Backend (${backend.name}): ${backendStatus.healthy ? "connected" : "unreachable"}`,
             `SpiceDB: ${spicedbOk ? "connected" : "unreachable"} (${cfg.spicedb.endpoint})`,
-            `Session: ${currentSessionId ?? "none"}`,
+            `Session: ${state.sessionId ?? "none"}`,
+            `Agent: ${ctx.agentId ?? "default"}`,
           ].join("\n");
 
           return {
@@ -468,13 +535,15 @@ const rebacMemoryPlugin = {
             details: status,
           };
         },
-      },
+      }),
       { name: "memory_status" },
     );
 
     // ========================================================================
     // CLI Commands
     // ========================================================================
+
+    const defaultSubject: Subject = { type: cfg.subjectType, id: cfg.subjectId };
 
     api.registerCli(
       ({ program }) => {
@@ -486,8 +555,8 @@ const rebacMemoryPlugin = {
           backend,
           spicedb,
           cfg,
-          currentSubject,
-          getLastWriteToken: () => lastWriteToken,
+          currentSubject: defaultSubject,
+          getLastWriteToken: () => getDefaultState().lastWriteToken,
         });
       },
       { commands: ["rebac-mem"] },
@@ -499,18 +568,19 @@ const rebacMemoryPlugin = {
 
     if (cfg.autoRecall) {
       api.on("before_agent_start", async (event, ctx) => {
-        if (ctx?.sessionKey) currentSessionId = ctx.sessionKey;
+        const subject = resolveSubject(ctx?.agentId);
+        const state = getState(ctx?.agentId);
+        if (ctx?.sessionKey) state.sessionId = ctx.sessionKey;
 
         if (!event.prompt || event.prompt.length < 5) return;
 
         try {
-          const authorizedGroups = await lookupAuthorizedGroups(spicedb, currentSubject, lastWriteToken);
-          if (authorizedGroups.length === 0) return;
+          const authorizedGroups = await lookupAuthorizedGroups(spicedb, subject, state.lastWriteToken);
 
           const longTermGroups = authorizedGroups.filter((g) => !isSessionGroup(g));
           const sessionGroups = authorizedGroups.filter(isSessionGroup);
-          if (currentSessionId) {
-            const sg = sessionGroupId(currentSessionId);
+          if (state.sessionId) {
+            const sg = sessionGroupId(state.sessionId);
             if (!sessionGroups.includes(sg)) sessionGroups.push(sg);
           }
 
@@ -520,7 +590,7 @@ const rebacMemoryPlugin = {
                   query: event.prompt,
                   groupIds: longTermGroups,
                   limit: 5,
-                  sessionId: currentSessionId,
+                  sessionId: state.sessionId,
                 })
               : Promise.resolve([]),
             sessionGroups.length > 0
@@ -528,7 +598,7 @@ const rebacMemoryPlugin = {
                   query: event.prompt,
                   groupIds: sessionGroups,
                   limit: 3,
-                  sessionId: currentSessionId,
+                  sessionId: state.sessionId,
                 })
               : Promise.resolve([]),
           ]);
@@ -561,7 +631,9 @@ const rebacMemoryPlugin = {
 
     if (cfg.autoCapture) {
       api.on("agent_end", async (event, ctx) => {
-        if (ctx?.sessionKey) currentSessionId = ctx.sessionKey;
+        const subject = resolveSubject(ctx?.agentId);
+        const state = getState(ctx?.agentId);
+        if (ctx?.sessionKey) state.sessionId = ctx.sessionKey;
 
         if (!event.success || !event.messages || event.messages.length === 0) return;
 
@@ -609,24 +681,24 @@ const rebacMemoryPlugin = {
           if (conversationLines.length === 0) return;
 
           const episodeBody = conversationLines.join("\n");
-          const targetGroupId = currentSessionId
-            ? sessionGroupId(currentSessionId)
+          const targetGroupId = state.sessionId
+            ? sessionGroupId(state.sessionId)
             : backendDefaultGroupId;
 
           const isOwnSession =
             isSessionGroup(targetGroupId) &&
-            currentSessionId != null &&
-            targetGroupId === sessionGroupId(currentSessionId);
+            state.sessionId != null &&
+            targetGroupId === sessionGroupId(state.sessionId);
 
           if (isOwnSession) {
             try {
-              const token = await ensureGroupMembership(spicedb, targetGroupId, currentSubject);
-              if (token) lastWriteToken = token;
+              const token = await ensureGroupMembership(spicedb, targetGroupId, subject);
+              if (token) state.lastWriteToken = token;
             } catch {
               // best-effort
             }
           } else {
-            const allowed = await canWriteToGroup(spicedb, currentSubject, targetGroupId, lastWriteToken);
+            const allowed = await canWriteToGroup(spicedb, subject, targetGroupId, state.lastWriteToken);
             if (!allowed) {
               api.logger.warn(`openclaw-memory-rebac: auto-capture denied for group ${targetGroupId}`);
               return;
@@ -652,17 +724,17 @@ const rebacMemoryPlugin = {
                   const writeToken = await writeFragmentRelationships(spicedb, {
                     fragmentId: factId,
                     groupId: targetGroupId,
-                    sharedBy: currentSubject,
+                    sharedBy: subject,
                   });
-                  if (writeToken) lastWriteToken = writeToken;
+                  if (writeToken) state.lastWriteToken = writeToken;
                 }
               } else {
                 const writeToken = await writeFragmentRelationships(spicedb, {
                   fragmentId: episodeId,
                   groupId: targetGroupId,
-                  sharedBy: currentSubject,
+                  sharedBy: subject,
                 });
-                if (writeToken) lastWriteToken = writeToken;
+                if (writeToken) state.lastWriteToken = writeToken;
               }
             })
             .catch((err) => {
@@ -672,7 +744,7 @@ const rebacMemoryPlugin = {
             });
 
           // Backend-specific session enrichment (optional backend feature)
-          if (backend.enrichSession && currentSessionId) {
+          if (backend.enrichSession && state.sessionId) {
             const lastUserMsg = [...event.messages]
               .reverse()
               .find((m) => (m as Record<string, unknown>).role === "user");
@@ -701,7 +773,7 @@ const rebacMemoryPlugin = {
 
             if (userMsg && assistantMsg) {
               backend.enrichSession({
-                sessionId: currentSessionId,
+                sessionId: state.sessionId,
                 groupId: targetGroupId,
                 userMsg,
                 assistantMsg,
@@ -725,6 +797,7 @@ const rebacMemoryPlugin = {
     api.registerService({
       id: "openclaw-memory-rebac",
       async start() {
+        const defaultState = getDefaultState();
         const backendStatus = await backend.getStatus();
         let spicedbOk = false;
         try {
@@ -742,11 +815,29 @@ const rebacMemoryPlugin = {
         }
 
         if (spicedbOk) {
+          // Ensure the config-level subject is a member of the default group
           try {
-            const token = await ensureGroupMembership(spicedb, backendDefaultGroupId, currentSubject);
-            if (token) lastWriteToken = token;
+            const token = await ensureGroupMembership(spicedb, backendDefaultGroupId, defaultSubject);
+            if (token) defaultState.lastWriteToken = token;
           } catch {
             api.logger.warn("openclaw-memory-rebac: failed to ensure default group membership");
+          }
+
+          // Write agent → owner relationships from identities config
+          for (const [agentId, personId] of Object.entries(cfg.identities)) {
+            try {
+              const token = await spicedb.writeRelationships([{
+                resourceType: "agent",
+                resourceId: agentId,
+                relation: "owner",
+                subjectType: "person",
+                subjectId: personId,
+              }]);
+              if (token) defaultState.lastWriteToken = token;
+              api.logger.info(`openclaw-memory-rebac: linked agent:${agentId} → person:${personId}`);
+            } catch (err) {
+              api.logger.warn(`openclaw-memory-rebac: failed to write owner for agent:${agentId}: ${err}`);
+            }
           }
         }
 

@@ -24,6 +24,8 @@ export type RebacMemoryConfig = {
   backendConfig: Record<string, unknown>;
   subjectType: "agent" | "person";
   subjectId: string;
+  /** Maps agent IDs to their owner person IDs (e.g., Slack user IDs). */
+  identities: Record<string, string>;
   autoCapture: boolean;
   autoRecall: boolean;
   maxCaptureMessages: number;
@@ -72,7 +74,7 @@ export const rebacMemoryConfigSchema = {
       cfg,
       [
         "backend", "spicedb",
-        "subjectType", "subjectId",
+        "subjectType", "subjectId", "identities",
         "autoCapture", "autoRecall", "maxCaptureMessages",
         backendName,
       ],
@@ -93,6 +95,17 @@ export const rebacMemoryConfigSchema = {
     const subjectId =
       typeof cfg.subjectId === "string" ? resolveEnvVars(cfg.subjectId) : pluginDefaults.subjectId;
 
+    // Parse identities: { "main": "U0123ABC", "work": "U0456DEF" }
+    const identitiesRaw = cfg.identities;
+    const identities: Record<string, string> = {};
+    if (identitiesRaw && typeof identitiesRaw === "object" && !Array.isArray(identitiesRaw)) {
+      for (const [agentId, personId] of Object.entries(identitiesRaw as Record<string, unknown>)) {
+        if (typeof personId === "string" && personId.trim()) {
+          identities[agentId] = personId.trim();
+        }
+      }
+    }
+
     return {
       backend: backendName,
       spicedb: {
@@ -109,6 +122,7 @@ export const rebacMemoryConfigSchema = {
       backendConfig,
       subjectType,
       subjectId,
+      identities,
       autoCapture: cfg.autoCapture !== false,
       autoRecall: cfg.autoRecall !== false,
       maxCaptureMessages:

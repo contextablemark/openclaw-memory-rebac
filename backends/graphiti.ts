@@ -273,6 +273,26 @@ export class GraphitiBackend implements MemoryBackend {
     );
   }
 
+  async getFragmentsByIds(ids: string[]): Promise<SearchResult[]> {
+    const results: SearchResult[] = [];
+    for (const id of ids) {
+      try {
+        const fact = await this.getEntityEdge(id);
+        results.push({
+          type: "fact",
+          uuid: id,
+          group_id: "unknown",
+          summary: fact.fact,
+          context: fact.name,
+          created_at: fact.created_at,
+        });
+      } catch {
+        // Fragment not found or unreachable — skip
+      }
+    }
+    return results;
+  }
+
   async discoverFragmentIds(episodeId: string): Promise<string[]> {
     const edges = await this.restCall<Array<{ uuid: string }>>(
       "GET",
