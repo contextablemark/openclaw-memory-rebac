@@ -38,7 +38,7 @@ Recall: agent:main calls memory_recall
 - OpenClaw gateway running with `openclaw-memory-rebac` plugin
 - Infrastructure stack running (SpiceDB, Graphiti, Neo4j, PostgreSQL) — see [configuration-guide.md](configuration-guide.md)
 - Slack integration configured in OpenClaw (the `slack_actions` tool available)
-- SpiceDB schema written (`npm run cli -- schema-write`)
+- SpiceDB schema written (`openclaw rebac-mem schema-write`)
 
 ## Step 1: Create the Stenographer Workspace
 
@@ -266,11 +266,14 @@ Should show SpiceDB and Graphiti connectivity, plus the configured identities.
 ### 3. Verify identity links in SpiceDB
 
 ```bash
-# Check that agent→owner relationships were written at startup
-npm run cli -- schema-read  # should show the schema
+# List configured identities and verify each against SpiceDB
+openclaw rebac-mem identities
+# Expected output:
+#   agent:main → person:U0123ABC  [verified]
+#   agent:work → person:U0456DEF  [verified]
 ```
 
-Or query SpiceDB directly:
+Or query SpiceDB directly with the `zed` CLI:
 
 ```bash
 zed relationship read agent:main#owner --insecure --endpoint localhost:50051 --token dev_token
@@ -288,7 +291,7 @@ Wait 30-60 seconds for the stenographer to process and store.
 ### 5. Verify the memory was stored
 
 ```bash
-npm run cli -- search "PostgreSQL" --limit 5
+openclaw rebac-mem search "PostgreSQL" --limit 5
 ```
 
 ### 6. Test cross-agent recall
