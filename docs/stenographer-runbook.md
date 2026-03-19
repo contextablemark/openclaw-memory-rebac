@@ -130,6 +130,7 @@ Add to `~/.openclaw/openclaw.json`:
         "workspace": "~/.openclaw/workspace-stenographer",
         "identity": { "name": "Stenographer" },
         "groupChat": {
+          "requireMention": false,
           "mentionPatterns": ["@stenographer", "@Stenographer", "@steno"]
         },
         "tools": {
@@ -221,6 +222,8 @@ Replace `C01ENGINEERING` etc. with your actual Slack channel IDs.
 
 | Field | Value | Why |
 |-------|-------|-----|
+| `requireMention` | `false` | **Critical.** Without this, the stenographer is only invoked on @mentions, not on every channel message. Set to `false` so it passively observes all traffic and can detect decisions. |
+| `mentionPatterns` | `["@stenographer", ...]` | Still useful — the SOUL.md can check if it was @mentioned to decide whether to *respond* (vs. silently store). Also provides context when `requireMention` is later changed to `true`. |
 | `subjectId` | `"main"` | Fallback identity when `agentId` isn't in runtime context |
 | `identities` | agent→person map | Links personal agents to their human Slack IDs for cross-agent recall |
 | No stenographer identity | intentional | Stenographer is a service agent — it doesn't represent a person |
