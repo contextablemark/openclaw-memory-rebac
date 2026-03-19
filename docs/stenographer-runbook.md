@@ -276,8 +276,8 @@ openclaw rebac-mem identities
 Or query SpiceDB directly with [`zed`](https://github.com/authzed/zed) (optional, install separately):
 
 ```bash
-zed relationship read agent:main#owner --insecure --endpoint localhost:50051 --token dev_token
-# Expected: agent:main #owner person:U0123ABC
+zed relationship read agent:main owner --insecure --endpoint localhost:50051 --token dev_token
+# Expected: agent:main owner person:U0123ABC
 ```
 
 ### 4. Test in a channel
