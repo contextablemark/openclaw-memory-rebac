@@ -134,6 +134,9 @@ Add the plugin to your OpenClaw configuration:
           },
           "subjectType": "agent",
           "subjectId": "my-agent",
+          "identities": {
+            "my-agent": "U0123ABC"
+          },
           "autoCapture": true,
           "autoRecall": true
         }
@@ -151,7 +154,8 @@ Add the plugin to your OpenClaw configuration:
 |-----|------|---------|-------------|
 | `backend` | `"graphiti"` | `"graphiti"` | Storage backend |
 | `subjectType` | `"agent"` \| `"person"` | `"agent"` | SpiceDB subject type for the current user |
-| `subjectId` | string | `"default"` | SpiceDB subject ID (supports `${ENV_VAR}`) |
+| `subjectId` | string | `"default"` | Fallback SpiceDB subject ID when agentId is unavailable (supports `${ENV_VAR}`) |
+| `identities` | `Record<string, string>` | `{}` | Maps agent IDs to owner person IDs for cross-agent recall |
 | `autoCapture` | boolean | `true` | Capture conversations after each agent turn |
 | `autoRecall` | boolean | `true` | Inject memories before each agent turn |
 | `customInstructions` | string | *(see below)* | Extraction instructions sent to the LLM |
@@ -198,6 +202,39 @@ Override this to tune extraction for your domain. For example, a medical assista
 }
 ```
 
+### Per-Agent Identity
+
+When multiple agents share a gateway, each agent automatically gets its own SpiceDB identity derived from its runtime `agentId`. The `subjectType`/`subjectId` config fields serve as a fallback for contexts where `agentId` is not available (standalone CLI, older OpenClaw versions).
+
+This means you generally do **not** need to set `subjectId` to match a specific agent — the plugin handles it automatically at runtime.
+
+### Identity Linking (`identities`)
+
+The `identities` field connects agents to the people they represent, enabling cross-agent recall. Each key is an agent ID, and each value is a person ID (typically a Slack user ID or other external identifier):
+
+```json
+{
+  "identities": {
+    "main": "U0123ABC",
+    "work": "U0456DEF"
+  }
+}
+```
+
+At startup, the plugin writes `agent:<agentId> #owner person:<personId>` relationships to SpiceDB. When an agent calls `memory_recall`, the plugin also looks up the agent's owner and searches for memories where that person is in `involves` — enabling the agent to discover memories stored by other agents about its owner.
+
+**When to use this:**
+- You have multiple agents and want a user's personal agent to find memories from service agents (stenographers, meeting recorders, etc.)
+- You use the `involves` parameter in `memory_store` to tag people in memories
+- You want cross-channel recall — e.g., decisions made in Slack discovered via WhatsApp
+
+**When you don't need this:**
+- Single-agent deployments
+- All agents share the same group memberships (group-based recall already works)
+- You don't use the `involves` parameter
+
+Agents without an entry in `identities` (like service agents) are not linked to any person. This is intentional — they act on their own behalf, not on behalf of a human.
+
 ### Environment Variable Interpolation
 
 String config values support `${VAR_NAME}` syntax. The variable must be set in the process environment — unset variables cause a startup error.
@@ -228,7 +265,10 @@ npm run cli -- schema-write
 The schema defines:
 
 ```zed
-definition person {}
+definition person {
+    relation agent: agent
+    permission represents = agent
+}
 
 definition agent {
     relation owner: person
@@ -246,7 +286,8 @@ definition memory_fragment {
     relation involves: person | agent
     relation shared_by: person | agent
 
-    permission view = involves + shared_by + source_group->access
+    // involves->represents: if a person is involved, their agent can also view
+    permission view = involves + shared_by + source_group->access + involves->represents
     permission delete = shared_by
 }
 ```
@@ -346,18 +387,38 @@ These are runtime monkey-patches applied via `importlib` — they depend on upst
 For development and testing without an OpenClaw gateway:
 
 ```bash
-# Check connectivity
+# Check connectivity (also shows subject and identity links)
 npm run cli -- status
 
-# Search memories
+# Search memories (includes owner-aware recall for linked agents)
 npm run cli -- search "project deadlines" --limit 5
 
-# List groups
+# Search as a specific subject
+npm run cli -- search "project deadlines" --as person:U0123ABC
+
+# List groups for the current subject (or override with --as)
 npm run cli -- groups
+npm run cli -- groups --as agent:stenographer
+
+# View configured identity links and verify them in SpiceDB
+npm run cli -- identities
+
+# Link/unlink an agent to its owner person
+npm run cli -- link-identity main U0123ABC
+npm run cli -- unlink-identity main
 
 # Import workspace files
 npm run cli -- import --workspace /path/to/files --dry-run
 ```
+
+### Subject Override (`--as`)
+
+The `search` and `groups` commands accept an `--as <subject>` flag to query as a different subject without changing config. The value can be:
+
+- `"type:id"` — e.g., `"agent:main"`, `"person:U0123ABC"`
+- Bare `"id"` — defaults to agent type, e.g., `"main"` is equivalent to `"agent:main"`
+
+This is useful for verifying permissions: `rebac-mem groups --as agent:stenographer` shows which groups the stenographer can access.
 
 ### CLI Config Resolution
 

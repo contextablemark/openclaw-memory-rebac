@@ -22,6 +22,8 @@ import type { RebacMemoryConfig } from "./config.js";
 import { defaultGroupId } from "./config.js";
 import {
   lookupAuthorizedGroups,
+  lookupAgentOwner,
+  lookupViewableFragments,
   writeFragmentRelationships,
   ensureGroupMembership,
   type Subject,
@@ -35,6 +37,27 @@ import { searchAuthorizedMemories } from "./search.js";
 function sessionGroupId(sessionId: string): string {
   const sanitized = sessionId.replace(/[^a-zA-Z0-9_-]/g, "-");
   return `session-${sanitized}`;
+}
+
+// ============================================================================
+// Subject parsing helper
+// ============================================================================
+
+/**
+ * Parse an --as flag value into a Subject.
+ * Accepts "type:id" (e.g., "agent:main", "person:U0123ABC") or bare "id" (defaults to agent type).
+ */
+export function parseSubjectOverride(value: string): Subject {
+  const colonIdx = value.indexOf(":");
+  if (colonIdx !== -1) {
+    const type = value.slice(0, colonIdx);
+    const id = value.slice(colonIdx + 1);
+    if (type !== "agent" && type !== "person") {
+      throw new Error(`Invalid subject type "${type}" — must be "agent" or "person"`);
+    }
+    return { type, id };
+  }
+  return { type: "agent", id: value };
 }
 
 // ============================================================================
@@ -63,26 +86,68 @@ export function registerCommands(cmd: Command, ctx: CliContext): void {
 
   cmd
     .command("search")
-    .description("Search memories with authorization")
+    .description("Search memories with authorization (includes owner-aware recall for agents)")
     .argument("<query>", "Search query")
     .option("--limit <n>", "Max results", "10")
-    .action(async (query: string, opts: { limit: string }) => {
-      const authorizedGroups = await lookupAuthorizedGroups(spicedb, currentSubject, getLastWriteToken());
-      if (authorizedGroups.length === 0) {
-        console.log("No accessible memory groups.");
-        return;
+    .option("--as <subject>", "Override subject (e.g., \"main\", \"agent:main\", \"person:U0123ABC\")")
+    .action(async (query: string, opts: { limit: string; as?: string }) => {
+      const subject = opts.as ? parseSubjectOverride(opts.as) : currentSubject;
+      const token = getLastWriteToken();
+
+      // Group-based search
+      const authorizedGroups = await lookupAuthorizedGroups(spicedb, subject, token);
+      console.log(`Searching as ${subject.type}:${subject.id}...`);
+
+      const groupResults = authorizedGroups.length > 0
+        ? await searchAuthorizedMemories(backend, {
+            query,
+            groupIds: authorizedGroups,
+            limit: parseInt(opts.limit),
+          })
+        : [];
+
+      // Fragment-based recall via involves/view permission
+      let fragmentResults: typeof groupResults = [];
+      if (backend.getFragmentsByIds) {
+        try {
+          // Determine the person to search as
+          let personSubject: Subject | undefined;
+          if (subject.type === "person") {
+            // Direct person search — look up fragments they can view
+            personSubject = subject;
+          } else if (subject.type === "agent") {
+            // Agent search — resolve owner identity first
+            const ownerId = await lookupAgentOwner(spicedb, subject.id, token);
+            if (ownerId) {
+              personSubject = { type: "person", id: ownerId };
+            }
+          }
+
+          if (personSubject) {
+            const viewableIds = await lookupViewableFragments(spicedb, personSubject, token);
+            if (viewableIds.length > 0) {
+              const groupResultIds = new Set(groupResults.map((r) => r.uuid));
+              const newIds = viewableIds.filter((id) => !groupResultIds.has(id));
+              if (newIds.length > 0) {
+                fragmentResults = await backend.getFragmentsByIds(newIds);
+              }
+            }
+            if (fragmentResults.length > 0) {
+              console.log(`  + ${fragmentResults.length} result(s) via involves (${personSubject.type}:${personSubject.id})`);
+            }
+          }
+        } catch {
+          // Fragment lookup failed — proceed with group results only
+        }
       }
-      console.log(`Searching ${authorizedGroups.length} authorized groups...`);
-      const results = await searchAuthorizedMemories(backend, {
-        query,
-        groupIds: authorizedGroups,
-        limit: parseInt(opts.limit),
-      });
-      if (results.length === 0) {
+
+      const allResults = [...groupResults, ...fragmentResults];
+      if (allResults.length === 0) {
         console.log("No results found.");
         return;
       }
-      console.log(JSON.stringify(results, null, 2));
+      console.log(`Found ${allResults.length} result(s) across ${authorizedGroups.length} group(s).`);
+      console.log(JSON.stringify(allResults, null, 2));
     });
 
   // --------------------------------------------------------------------------
@@ -106,6 +171,15 @@ export function registerCommands(cmd: Command, ctx: CliContext): void {
         if (k !== "backend" && k !== "healthy") console.log(`  ${k}: ${v}`);
       }
       console.log(`SpiceDB: ${spicedbOk ? "OK" : "UNREACHABLE"} (${cfg.spicedb.endpoint})`);
+      console.log(`Subject: ${currentSubject.type}:${currentSubject.id}`);
+
+      const identityEntries = Object.entries(cfg.identities);
+      if (identityEntries.length > 0) {
+        console.log(`Identities: ${identityEntries.length} configured`);
+        for (const [agentId, personId] of identityEntries) {
+          console.log(`  agent:${agentId} → person:${personId}`);
+        }
+      }
     });
 
   // --------------------------------------------------------------------------
@@ -128,14 +202,16 @@ export function registerCommands(cmd: Command, ctx: CliContext): void {
 
   cmd
     .command("groups")
-    .description("List authorized groups for current subject")
-    .action(async () => {
-      const groups = await lookupAuthorizedGroups(spicedb, currentSubject, getLastWriteToken());
+    .description("List authorized groups for a subject")
+    .option("--as <subject>", "Override subject (e.g., \"main\", \"agent:stenographer\")")
+    .action(async (opts: { as?: string }) => {
+      const subject = opts.as ? parseSubjectOverride(opts.as) : currentSubject;
+      const groups = await lookupAuthorizedGroups(spicedb, subject, getLastWriteToken());
       if (groups.length === 0) {
-        console.log("No authorized groups.");
+        console.log(`No authorized groups for ${subject.type}:${subject.id}.`);
         return;
       }
-      console.log(`Authorized groups for ${currentSubject.type}:${currentSubject.id}:`);
+      console.log(`Authorized groups for ${subject.type}:${subject.id}:`);
       for (const g of groups) console.log(`  - ${g}`);
     });
 
@@ -516,6 +592,115 @@ export function registerCommands(cmd: Command, ctx: CliContext): void {
         }
       });
   }
+
+  // --------------------------------------------------------------------------
+  // identities — list and verify agent→owner identity links
+  // --------------------------------------------------------------------------
+
+  cmd
+    .command("identities")
+    .description("List configured identity links and verify them in SpiceDB")
+    .action(async () => {
+      const identities = cfg.identities;
+      const entries = Object.entries(identities);
+
+      if (entries.length === 0) {
+        console.log("No identities configured.");
+        console.log("Add an \"identities\" field to your config to link agents to their owners:");
+        console.log('  { "identities": { "main": "U0123ABC" } }');
+        return;
+      }
+
+      console.log("Configured identity links:\n");
+      for (const [agentId, personId] of entries) {
+        let spicedbStatus: string;
+        try {
+          const ownerId = await lookupAgentOwner(spicedb, agentId, getLastWriteToken());
+          if (ownerId === personId) {
+            spicedbStatus = "verified";
+          } else if (ownerId) {
+            spicedbStatus = `mismatch (SpiceDB has person:${ownerId})`;
+          } else {
+            spicedbStatus = "not found in SpiceDB";
+          }
+        } catch {
+          spicedbStatus = "SpiceDB unreachable";
+        }
+        console.log(`  agent:${agentId} → person:${personId}  [${spicedbStatus}]`);
+      }
+
+      console.log("\nTo write missing links, restart the gateway or use: rebac-mem link-identity <agent-id> <person-id>");
+    });
+
+  // --------------------------------------------------------------------------
+  // link-identity — write an agent→owner relationship to SpiceDB
+  // --------------------------------------------------------------------------
+
+  cmd
+    .command("link-identity")
+    .description("Write an agent→owner relationship to SpiceDB")
+    .argument("<agent-id>", "Agent ID")
+    .argument("<person-id>", "Owner person ID")
+    .action(async (agentId: string, personId: string) => {
+      try {
+        await spicedb.writeRelationships([
+          {
+            resourceType: "agent",
+            resourceId: agentId,
+            relation: "owner",
+            subjectType: "person",
+            subjectId: personId,
+          },
+          {
+            resourceType: "person",
+            resourceId: personId,
+            relation: "agent",
+            subjectType: "agent",
+            subjectId: agentId,
+          },
+        ]);
+        console.log(`Linked agent:${agentId} ↔ person:${personId}`);
+      } catch (err) {
+        console.error(`Failed to write identity link: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    });
+
+  // --------------------------------------------------------------------------
+  // unlink-identity — remove an agent→owner relationship from SpiceDB
+  // --------------------------------------------------------------------------
+
+  cmd
+    .command("unlink-identity")
+    .description("Remove an agent→owner relationship from SpiceDB")
+    .argument("<agent-id>", "Agent ID")
+    .action(async (agentId: string) => {
+      try {
+        const ownerId = await lookupAgentOwner(spicedb, agentId, getLastWriteToken());
+        if (!ownerId) {
+          console.log(`No owner link found for agent:${agentId}`);
+          return;
+        }
+        await spicedb.deleteRelationships([
+          {
+            resourceType: "agent",
+            resourceId: agentId,
+            relation: "owner",
+            subjectType: "person",
+            subjectId: ownerId,
+          },
+          {
+            resourceType: "person",
+            resourceId: ownerId,
+            relation: "agent",
+            subjectType: "agent",
+            subjectId: agentId,
+          },
+        ]);
+        console.log(`Unlinked agent:${agentId} (was ↔ person:${ownerId})`);
+      } catch (err) {
+        console.error(`Failed to remove identity link: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    });
 
   // --------------------------------------------------------------------------
   // Backend-specific extension point
