@@ -42,7 +42,11 @@ Recall: agent:main calls memory_recall
 
 ## Step 1: Create the Stenographer Workspace
 
-Create `~/.openclaw/workspace-stenographer/SOUL.md`:
+```bash
+openclaw setup --workspace ~/.openclaw/workspace-stenographer
+```
+
+Then edit `~/.openclaw/workspace-stenographer/SOUL.md`:
 
 ```markdown
 # Stenographer

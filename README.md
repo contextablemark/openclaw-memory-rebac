@@ -303,12 +303,17 @@ All commands are under `rebac-mem`:
 
 | Command | Description |
 |---------|-------------|
-| `rebac-mem search <query>` | Search memories with authorization. Options: `--limit`, `--scope` |
-| `rebac-mem status` | Check SpiceDB + backend connectivity |
+| `rebac-mem search <query>` | Search memories with authorization (includes owner-aware recall). Options: `--limit`, `--as` |
+| `rebac-mem status` | Check SpiceDB + backend connectivity, show subject and identity links |
 | `rebac-mem schema-write` | Write/update the SpiceDB authorization schema |
-| `rebac-mem groups` | List authorized groups for the current subject |
+| `rebac-mem groups` | List authorized groups for a subject. Options: `--as` |
 | `rebac-mem add-member <group-id> <subject-id>` | Add a subject to a group. Options: `--type` |
+| `rebac-mem identities` | List configured identity links and verify them in SpiceDB |
+| `rebac-mem link-identity <agent-id> <person-id>` | Write an agent→owner relationship to SpiceDB |
+| `rebac-mem unlink-identity <agent-id>` | Remove an agent→owner relationship from SpiceDB |
 | `rebac-mem import` | Import workspace markdown files. Options: `--workspace`, `--include-sessions`, `--group`, `--dry-run` |
+
+The `--as` flag accepts `"type:id"` (e.g., `"agent:main"`, `"person:U0123ABC"`) or a bare `"id"` (defaults to agent type). Use it to query as a different subject without changing config.
 
 Backend-specific commands (Graphiti):
 

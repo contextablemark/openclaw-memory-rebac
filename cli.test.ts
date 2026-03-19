@@ -4,7 +4,7 @@
  */
 
 import { describe, test, expect, vi, beforeEach } from "vitest";
-import { registerCommands, type CliContext } from "./cli.js";
+import { registerCommands, parseSubjectOverride, type CliContext } from "./cli.js";
 import type { MemoryBackend, SearchResult, BackendDataset } from "./backend.js";
 import type { SpiceDbClient } from "./spicedb.js";
 
@@ -132,6 +132,7 @@ function createMockContext(backend: MemoryBackend, spicedb: SpiceDbClient): CliC
       },
       subjectType: "agent" as const,
       subjectId: "test-agent",
+      identities: {},
       autoCapture: true,
       autoRecall: true,
       maxCaptureMessages: 10,
@@ -215,7 +216,7 @@ describe("search command", () => {
 
     expect(spicedb.lookupResources).toHaveBeenCalled();
     expect(backend.searchGroup).toHaveBeenCalled();
-    expect(consoleOutput.some(line => line.includes("Searching 2 authorized groups"))).toBe(true);
+    expect(consoleOutput.some(line => line.includes("Searching as agent:test-agent"))).toBe(true);
     expect(consoleOutput.some(line => line.includes("c1"))).toBe(true);
   });
 
@@ -230,7 +231,7 @@ describe("search command", () => {
 
     await actions["search"]("test query", { limit: "10" });
 
-    expect(consoleOutput).toContain("No accessible memory groups.");
+    expect(consoleOutput).toContain("No results found.");
   });
 
   test("handles no results found", async () => {
@@ -347,7 +348,7 @@ describe("groups command", () => {
 
     registerCommands(program, ctx);
 
-    await actions["groups"]();
+    await actions["groups"]({});
 
     expect(spicedb.lookupResources).toHaveBeenCalled();
     expect(consoleOutput.some(line => line.includes("Authorized groups for agent:test-agent"))).toBe(true);
@@ -365,9 +366,9 @@ describe("groups command", () => {
 
     registerCommands(program, ctx);
 
-    await actions["groups"]();
+    await actions["groups"]({});
 
-    expect(consoleOutput).toContain("No authorized groups.");
+    expect(consoleOutput).toContain("No authorized groups for agent:test-agent.");
   });
 });
 
@@ -458,6 +459,19 @@ describe("import command", () => {
 // ============================================================================
 
 describe("backend-specific commands", () => {
+  test("registers identity management commands", () => {
+    const backend = createMockBackend();
+    const spicedb = createMockSpiceDb();
+    const { program, commands } = createMockProgram();
+    const ctx = createMockContext(backend, spicedb);
+
+    registerCommands(program, ctx);
+
+    expect(commands).toContain("identities");
+    expect(commands).toContain("link-identity");
+    expect(commands).toContain("unlink-identity");
+  });
+
   test("graphiti backend adds episodes, fact, clear-graph commands", () => {
     const mockRegister = vi.fn((cmd) => {
       cmd.command("episodes");
@@ -481,4 +495,122 @@ describe("backend-specific commands", () => {
     expect(commands).toContain("clear-graph");
   });
 
+});
+
+// ============================================================================
+// Tests - parseSubjectOverride
+// ============================================================================
+
+describe("parseSubjectOverride", () => {
+  test("parses type:id format", () => {
+    expect(parseSubjectOverride("agent:main")).toEqual({ type: "agent", id: "main" });
+    expect(parseSubjectOverride("person:U0123ABC")).toEqual({ type: "person", id: "U0123ABC" });
+  });
+
+  test("bare id defaults to agent type", () => {
+    expect(parseSubjectOverride("main")).toEqual({ type: "agent", id: "main" });
+    expect(parseSubjectOverride("stenographer")).toEqual({ type: "agent", id: "stenographer" });
+  });
+
+  test("rejects invalid subject type", () => {
+    expect(() => parseSubjectOverride("group:team-x")).toThrow('Invalid subject type "group"');
+  });
+});
+
+// ============================================================================
+// Tests - identities command
+// ============================================================================
+
+describe("identities command", () => {
+  test("lists configured identity links", async () => {
+    const backend = createMockBackend();
+    const spicedb = createMockSpiceDb();
+    const { program, actions } = createMockProgram();
+    const ctx = createMockContext(backend, spicedb);
+    ctx.cfg.identities = { "main": "U0123ABC", "work": "U0456DEF" };
+
+    registerCommands(program, ctx);
+
+    await actions["identities"]();
+
+    expect(consoleOutput.some(line => line.includes("agent:main"))).toBe(true);
+    expect(consoleOutput.some(line => line.includes("U0123ABC"))).toBe(true);
+    expect(consoleOutput.some(line => line.includes("agent:work"))).toBe(true);
+    expect(consoleOutput.some(line => line.includes("U0456DEF"))).toBe(true);
+  });
+
+  test("shows help when no identities configured", async () => {
+    const backend = createMockBackend();
+    const spicedb = createMockSpiceDb();
+    const { program, actions } = createMockProgram();
+    const ctx = createMockContext(backend, spicedb);
+
+    registerCommands(program, ctx);
+
+    await actions["identities"]();
+
+    expect(consoleOutput).toContain("No identities configured.");
+  });
+});
+
+// ============================================================================
+// Tests - link-identity / unlink-identity commands
+// ============================================================================
+
+describe("link-identity command", () => {
+  test("writes agent→owner relationship", async () => {
+    const backend = createMockBackend();
+    const spicedb = createMockSpiceDb();
+    const { program, actions } = createMockProgram();
+    const ctx = createMockContext(backend, spicedb);
+
+    registerCommands(program, ctx);
+
+    await actions["link-identity"]("my-agent", "U0123ABC");
+
+    expect(spicedb.writeRelationships).toHaveBeenCalled();
+    const call = (spicedb.writeRelationships as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(call[0]).toMatchObject({
+      resourceType: "agent",
+      resourceId: "my-agent",
+      relation: "owner",
+      subjectType: "person",
+      subjectId: "U0123ABC",
+    });
+    expect(consoleOutput).toContain("Linked agent:my-agent → person:U0123ABC");
+  });
+});
+
+describe("unlink-identity command", () => {
+  test("removes agent→owner relationship", async () => {
+    const backend = createMockBackend();
+    const spicedb = createMockSpiceDb();
+    // lookupAgentOwner uses readRelationships; mock it to return the owner
+    spicedb.readRelationships = vi.fn().mockResolvedValue([
+      { subjectType: "person", subjectId: "U0123ABC" },
+    ]);
+    const { program, actions } = createMockProgram();
+    const ctx = createMockContext(backend, spicedb);
+
+    registerCommands(program, ctx);
+
+    await actions["unlink-identity"]("my-agent");
+
+    expect(spicedb.deleteRelationships).toHaveBeenCalled();
+    expect(consoleOutput.some(line => line.includes("Unlinked agent:my-agent"))).toBe(true);
+  });
+
+  test("reports when no owner link exists", async () => {
+    const backend = createMockBackend();
+    const spicedb = createMockSpiceDb();
+    spicedb.readRelationships = vi.fn().mockResolvedValue([]);
+    const { program, actions } = createMockProgram();
+    const ctx = createMockContext(backend, spicedb);
+
+    registerCommands(program, ctx);
+
+    await actions["unlink-identity"]("orphan-agent");
+
+    expect(consoleOutput).toContain("No owner link found for agent:orphan-agent");
+  });
 });

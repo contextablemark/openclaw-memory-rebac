@@ -383,18 +383,38 @@ These are runtime monkey-patches applied via `importlib` — they depend on upst
 For development and testing without an OpenClaw gateway:
 
 ```bash
-# Check connectivity
+# Check connectivity (also shows subject and identity links)
 npm run cli -- status
 
-# Search memories
+# Search memories (includes owner-aware recall for linked agents)
 npm run cli -- search "project deadlines" --limit 5
 
-# List groups
+# Search as a specific subject
+npm run cli -- search "project deadlines" --as person:U0123ABC
+
+# List groups for the current subject (or override with --as)
 npm run cli -- groups
+npm run cli -- groups --as agent:stenographer
+
+# View configured identity links and verify them in SpiceDB
+npm run cli -- identities
+
+# Link/unlink an agent to its owner person
+npm run cli -- link-identity main U0123ABC
+npm run cli -- unlink-identity main
 
 # Import workspace files
 npm run cli -- import --workspace /path/to/files --dry-run
 ```
+
+### Subject Override (`--as`)
+
+The `search` and `groups` commands accept an `--as <subject>` flag to query as a different subject without changing config. The value can be:
+
+- `"type:id"` — e.g., `"agent:main"`, `"person:U0123ABC"`
+- Bare `"id"` — defaults to agent type, e.g., `"main"` is equivalent to `"agent:main"`
+
+This is useful for verifying permissions: `rebac-mem groups --as agent:stenographer` shows which groups the stenographer can access.
 
 ### CLI Config Resolution
 
