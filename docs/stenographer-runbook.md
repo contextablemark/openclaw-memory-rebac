@@ -273,7 +273,7 @@ openclaw rebac-mem identities
 #   agent:work → person:U0456DEF  [verified]
 ```
 
-Or query SpiceDB directly with the `zed` CLI:
+Or query SpiceDB directly with [`zed`](https://github.com/authzed/zed) (optional, install separately):
 
 ```bash
 zed relationship read agent:main#owner --insecure --endpoint localhost:50051 --token dev_token
