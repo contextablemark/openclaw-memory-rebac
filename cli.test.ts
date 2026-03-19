@@ -248,6 +248,30 @@ describe("search command", () => {
 
     expect(consoleOutput).toContain("No results found.");
   });
+
+  test("search as person finds fragments via involves", async () => {
+    const backend = createMockBackend({
+      searchGroup: vi.fn().mockResolvedValue([]),
+      getFragmentsByIds: vi.fn().mockResolvedValue([
+        { type: "fact", uuid: "frag-1", group_id: "steno-group", summary: "Decision: use PostgreSQL", context: "#engineering" },
+      ]),
+    });
+    const spicedb = createMockSpiceDb();
+    // lookupResources: first call for groups (empty), second for viewable fragments
+    spicedb.lookupResources = vi.fn()
+      .mockResolvedValueOnce([])           // no authorized groups
+      .mockResolvedValueOnce(["frag-1"]);  // viewable fragment via involves
+    const { program, actions } = createMockProgram();
+    const ctx = createMockContext(backend, spicedb);
+
+    registerCommands(program, ctx);
+
+    await actions["search"]("PostgreSQL", { limit: "10", as: "person:U0123ABC" });
+
+    expect(backend.getFragmentsByIds).toHaveBeenCalledWith(["frag-1"]);
+    expect(consoleOutput.some(line => line.includes("via involves"))).toBe(true);
+    expect(consoleOutput.some(line => line.includes("frag-1"))).toBe(true);
+  });
 });
 
 // ============================================================================

@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.2] - 2026-03-19
+
+### Fixed
+
+- **CLI: `search` now works for `person` subjects**: Previously, `search --as person:U0123ABC` only searched groups (finding none), ignoring `involves`-based fragment access. Now fragment-based search via `lookupViewableFragments` runs for both `person` and `agent` subjects.
+
+### Changed
+
+- **Stenographer SOUL.md updates**: Broadened `involves` scope to include acknowledgers/approvers; added post-store channel acknowledgement; strengthened `memberInfo` resolution instructions; replaced `slack_actions` with correct `message` tool name.
+- **Runbook prerequisites**: Added required Slack OAuth scopes and event subscriptions documentation.
+
 ## [0.3.1] - 2026-03-19
 
 ### Added

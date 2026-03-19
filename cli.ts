@@ -106,31 +106,42 @@ export function registerCommands(cmd: Command, ctx: CliContext): void {
           })
         : [];
 
-      // Owner-aware recall: if agent, resolve owner and find involves fragments
-      let ownerResults: typeof groupResults = [];
-      if (subject.type === "agent" && backend.getFragmentsByIds) {
+      // Fragment-based recall via involves/view permission
+      let fragmentResults: typeof groupResults = [];
+      if (backend.getFragmentsByIds) {
         try {
-          const ownerId = await lookupAgentOwner(spicedb, subject.id, token);
-          if (ownerId) {
-            const ownerSubject: Subject = { type: "person", id: ownerId };
-            const viewableIds = await lookupViewableFragments(spicedb, ownerSubject, token);
+          // Determine the person to search as
+          let personSubject: Subject | undefined;
+          if (subject.type === "person") {
+            // Direct person search — look up fragments they can view
+            personSubject = subject;
+          } else if (subject.type === "agent") {
+            // Agent search — resolve owner identity first
+            const ownerId = await lookupAgentOwner(spicedb, subject.id, token);
+            if (ownerId) {
+              personSubject = { type: "person", id: ownerId };
+            }
+          }
+
+          if (personSubject) {
+            const viewableIds = await lookupViewableFragments(spicedb, personSubject, token);
             if (viewableIds.length > 0) {
               const groupResultIds = new Set(groupResults.map((r) => r.uuid));
               const newIds = viewableIds.filter((id) => !groupResultIds.has(id));
               if (newIds.length > 0) {
-                ownerResults = await backend.getFragmentsByIds(newIds);
+                fragmentResults = await backend.getFragmentsByIds(newIds);
               }
             }
-            if (ownerResults.length > 0) {
-              console.log(`  + ${ownerResults.length} result(s) via owner identity (person:${ownerId})`);
+            if (fragmentResults.length > 0) {
+              console.log(`  + ${fragmentResults.length} result(s) via involves (${personSubject.type}:${personSubject.id})`);
             }
           }
         } catch {
-          // Owner lookup failed — proceed with group results only
+          // Fragment lookup failed — proceed with group results only
         }
       }
 
-      const allResults = [...groupResults, ...ownerResults];
+      const allResults = [...groupResults, ...fragmentResults];
       if (allResults.length === 0) {
         console.log("No results found.");
         return;
