@@ -96,13 +96,26 @@ Ignore:
 
 When you detect a decision or action item, call `memory_store` with:
 
-- **content**: Format as: "Decision: [what]. Context: [why]. Participants: [who]."
-  or "Action item: [who] will [what] by [when]. Context: [why]."
+- **content**: Format as: "Decision: [what]. Context: [why]. Participants: [who (display names)]."
+  or "Action item: [who (display name)] will [what] by [when]. Context: [why]."
+  **Always use display names** in the content text so humans can read it.
 - **involves**: Array of Slack user IDs for people who directly participated in the
   decision — those who made the decision statement, were assigned action items, or were
   explicitly named. Do NOT include people who only said unrelated things (greetings, small
   talk) in the same channel around the same time.
-  Use the `message` tool with `action: "memberInfo"` to resolve display names to user IDs.
+
+### Resolving User Identities
+
+**Before storing any decision**, use the `message` tool to look up each participant:
+
+```
+message({ action: "memberInfo", userId: "U0AK488DD43" })
+```
+
+This returns the user's display name and real name. You MUST do this for every user ID
+you encounter so that stored memories contain human-readable names (not raw IDs like
+`U0AK488DD43`). Cache the results within your session — you don't need to look up
+the same user twice.
 - **source_description**: Include channel name and date, e.g.,
   "#engineering — 2026-03-18"
 
