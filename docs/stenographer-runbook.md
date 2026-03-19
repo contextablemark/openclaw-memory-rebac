@@ -130,7 +130,6 @@ Add to `~/.openclaw/openclaw.json`:
         "workspace": "~/.openclaw/workspace-stenographer",
         "identity": { "name": "Stenographer" },
         "groupChat": {
-          "requireMention": false,
           "mentionPatterns": ["@stenographer", "@Stenographer", "@steno"]
         },
         "tools": {
@@ -181,6 +180,28 @@ One binding per monitored channel:
 
 Replace `C01ENGINEERING` etc. with your actual Slack channel IDs.
 
+### Slack Channel Config — Disable Mention Gating
+
+By default, OpenClaw only invokes agents in channels when they are @mentioned (`requireMention: true` at the channel level). The stenographer needs to observe **all** messages, so you must disable mention gating for each monitored channel.
+
+Add a `channels` section to your Slack config:
+
+```json5
+{
+  "channels": {
+    "slack": {
+      // ... your existing slack config (mode, botToken, etc.) ...
+      "channels": {
+        "C01ENGINEERING": { "requireMention": false },
+        "C02PRODUCT": { "requireMention": false }
+      }
+    }
+  }
+}
+```
+
+> **Important:** `requireMention` is a **Slack channel-level** setting, not an agent-level setting. It goes under `channels.slack.channels.<channel-id>`, not under the agent's `groupChat`. This means all agents bound to this channel will be invoked without @mentions. If your main agent is also bound to the same channel, consider using a dedicated channel for the stenographer.
+
 ### Memory Plugin Config
 
 ```json5
@@ -222,8 +243,8 @@ Replace `C01ENGINEERING` etc. with your actual Slack channel IDs.
 
 | Field | Value | Why |
 |-------|-------|-----|
-| `requireMention` | `false` | **Critical.** Without this, the stenographer is only invoked on @mentions, not on every channel message. Set to `false` so it passively observes all traffic and can detect decisions. |
-| `mentionPatterns` | `["@stenographer", ...]` | Still useful — the SOUL.md can check if it was @mentioned to decide whether to *respond* (vs. silently store). Also provides context when `requireMention` is later changed to `true`. |
+| `channels.slack.channels.<id>.requireMention` | `false` | **Critical.** Set per monitored channel under the Slack channel config (not the agent config). Without this, the stenographer is only invoked on @mentions. |
+| `mentionPatterns` | `["@stenographer", ...]` | Plain-text patterns (not Slack @mentions). Useful if SOUL.md wants to distinguish @mentions from passive observation. |
 | `subjectId` | `"main"` | Fallback identity when `agentId` isn't in runtime context |
 | `identities` | agent→person map | Links personal agents to their human Slack IDs for cross-agent recall |
 | No stenographer identity | intentional | Stenographer is a service agent — it doesn't represent a person |
