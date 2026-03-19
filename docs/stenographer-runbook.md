@@ -37,7 +37,22 @@ Recall: agent:main calls memory_recall
 
 - OpenClaw gateway running with `openclaw-memory-rebac` plugin
 - Infrastructure stack running (SpiceDB, Graphiti, Neo4j, PostgreSQL) — see [configuration-guide.md](configuration-guide.md)
-- Slack integration configured in OpenClaw (the `slack_actions` tool available)
+- Slack integration configured in OpenClaw (the `message` tool available)
+- Slack bot token with required OAuth scopes:
+  - `channels:read` — resolve public channel IDs
+  - `channels:history` — read messages in public channels
+  - `groups:read` and `groups:history` — if monitoring private channels
+  - `chat:write` — respond when @mentioned
+  - `users:read` — resolve display names to user IDs (for `involves`)
+
+  > If you see `missing_scope` in gateway logs, add the missing scope in your [Slack app settings](https://api.slack.com/apps) under **OAuth & Permissions → Bot Token Scopes**, then **reinstall the app** to your workspace.
+- Slack app event subscriptions enabled (in app settings → **Event Subscriptions** → **Subscribe to bot events**):
+  - `message.channels` — receive messages in public channels
+  - `message.groups` — receive messages in private channels
+  - `message.im` — receive direct messages
+  - `app_mention` — receive explicit @mentions
+
+  > **Important:** OAuth scopes and event subscriptions are separate. Scopes grant *permission* to access data; event subscriptions tell Slack to *deliver* events to your app. Both are required. After adding subscriptions, **reinstall the app** to your workspace.
 - SpiceDB schema written (`openclaw rebac-mem schema-write`)
 
 ## Step 1: Create the Stenographer Workspace
@@ -83,8 +98,11 @@ When you detect a decision or action item, call `memory_store` with:
 
 - **content**: Format as: "Decision: [what]. Context: [why]. Participants: [who]."
   or "Action item: [who] will [what] by [when]. Context: [why]."
-- **involves**: Array of Slack user IDs for all participants in the decision.
-  Use `slack_actions` `memberInfo` to resolve display names to user IDs if needed.
+- **involves**: Array of Slack user IDs for people who directly participated in the
+  decision — those who made the decision statement, were assigned action items, or were
+  explicitly named. Do NOT include people who only said unrelated things (greetings, small
+  talk) in the same channel around the same time.
+  Use the `message` tool with `action: "memberInfo"` to resolve display names to user IDs.
 - **source_description**: Include channel name and date, e.g.,
   "#engineering — 2026-03-18"
 
@@ -134,7 +152,7 @@ Add to `~/.openclaw/openclaw.json`:
         },
         "tools": {
           "allow": [
-            "slack_actions",
+            "message",
             "memory_store",
             "memory_recall",
             "memory_status",
@@ -341,7 +359,7 @@ This should fail with a permission error — only the stenographer (as `shared_b
 
 1. **Check bindings**: Verify the channel ID in your binding matches the actual Slack channel ID
 2. **Check SOUL.md**: Make sure the workspace path is correct and the file exists
-3. **Check tools**: The stenographer needs `memory_store` and `slack_actions` in its allow list
+3. **Check tools**: The stenographer needs `memory_store` and `message` in its allow list
 4. **Check logs**: Look for errors in the OpenClaw gateway logs related to the stenographer agent
 
 ### Cross-agent recall returns nothing
@@ -358,7 +376,7 @@ Check the `mentionPatterns` in the agent config. The stenographer should only re
 ### Memories are created but have no `involves`
 
 The SOUL.md instructions tell the stenographer to include `involves`. If it's not doing so:
-1. Check that `slack_actions` `memberInfo` is working (the stenographer needs it to resolve display names to user IDs)
+1. Check that the `message` tool with `action: "memberInfo"` is working (the stenographer needs it to resolve display names to user IDs)
 2. Add more explicit examples to the SOUL.md
 3. Check that the `memory_store` tool's `involves` parameter is being passed through correctly
 
