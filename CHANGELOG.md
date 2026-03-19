@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] - 2026-03-19
+
+### Added
+
+- **CLI: `identities` command**: Lists configured identity links and verifies each against SpiceDB (shows `verified`, `mismatch`, or `not found`).
+- **CLI: `link-identity` / `unlink-identity` commands**: Write or remove `agent→owner` relationships in SpiceDB directly from the CLI, without restarting the gateway.
+- **CLI: `--as` subject override** for `search` and `groups` commands. Accepts `"type:id"` (e.g., `"agent:main"`, `"person:U0123ABC"`) or bare `"id"` (defaults to agent type).
+- **CLI: `status` enhanced**: Now displays the current subject and configured identity links.
+- **CLI: Owner-aware recall in `search`**: When the subject is an agent with an owner, `search` also finds memories where the owner is in `involves`.
+
 ## [0.3.0] - 2026-03-18
 
 ### Added
@@ -16,12 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`lookupAgentOwner` helper** (`authorization.ts`): Queries SpiceDB for `agent:<id> #owner` relationships and returns the owner's person ID, or `undefined` if no owner is linked.
 - **`getFragmentsByIds` backend method** (`backend.ts`, `backends/graphiti.ts`): Optional method on the `MemoryBackend` interface to fetch fragment details by their SpiceDB-tracked IDs. The Graphiti implementation uses the `entity-edge` endpoint. Used by owner-aware recall to hydrate fragment IDs discovered via `involves` permissions.
 - **Stenographer agent runbook** (`docs/stenographer-runbook.md`): Comprehensive setup guide for deploying a passive Slack-monitoring agent that observes channels, detects decisions/action items, and stores them with `involves` relationships for cross-agent access control. Includes SOUL.md template, `openclaw.json` configuration, verification checklist, troubleshooting, and architecture diagram.
-- **CLI: `--as` subject override** for `search` and `groups` commands. Accepts `"type:id"` (e.g., `"agent:main"`, `"person:U0123ABC"`) or bare `"id"` (defaults to agent type). Enables querying as a different subject without changing config.
-- **CLI: `identities` command**: Lists configured identity links and verifies each against SpiceDB (shows `verified`, `mismatch`, or `not found`).
-- **CLI: `link-identity` / `unlink-identity` commands**: Write or remove `agent→owner` relationships in SpiceDB directly from the CLI, without restarting the gateway.
-- **CLI: `status` enhanced**: Now displays the current subject and configured identity links.
-- **CLI: Owner-aware recall in `search`**: When the subject is an agent with an owner, `search` now also finds memories where the owner is in `involves` (same logic as `memory_recall`).
-- **Unit tests**: 15 new tests covering per-agent identity, identity linking, owner-aware recall, fallback behavior, `parseSubjectOverride`, and identity management CLI commands.
+- **Unit tests**: 6 new tests covering per-agent identity, identity linking, owner-aware recall, and fallback behavior.
 - **E2E integration tests**: 7 new tests exercising the full stenographer feature set against live SpiceDB + Graphiti — decision storage with `involves`, permission enforcement (view vs. delete), per-agent group isolation, owner-aware fragment discovery, end-to-end agent→owner→involves chain, and unauthorized agent denial.
 
 ### Fixed

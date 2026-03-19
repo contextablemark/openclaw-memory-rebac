@@ -1,6 +1,6 @@
 {
   "name": "@contextableai/openclaw-memory-rebac",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "OpenClaw two-layer memory plugin: SpiceDB ReBAC authorization + Graphiti knowledge graph",
   "type": "module",
   "license": "MIT",
