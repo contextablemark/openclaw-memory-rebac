@@ -826,15 +826,24 @@ const rebacMemoryPlugin = {
           // Write agent → owner relationships from identities config
           for (const [agentId, personId] of Object.entries(cfg.identities)) {
             try {
-              const token = await spicedb.writeRelationships([{
-                resourceType: "agent",
-                resourceId: agentId,
-                relation: "owner",
-                subjectType: "person",
-                subjectId: personId,
-              }]);
+              const token = await spicedb.writeRelationships([
+                {
+                  resourceType: "agent",
+                  resourceId: agentId,
+                  relation: "owner",
+                  subjectType: "person",
+                  subjectId: personId,
+                },
+                {
+                  resourceType: "person",
+                  resourceId: personId,
+                  relation: "agent",
+                  subjectType: "agent",
+                  subjectId: agentId,
+                },
+              ]);
               if (token) defaultState.lastWriteToken = token;
-              api.logger.info(`openclaw-memory-rebac: linked agent:${agentId} → person:${personId}`);
+              api.logger.info(`openclaw-memory-rebac: linked agent:${agentId} ↔ person:${personId}`);
             } catch (err) {
               api.logger.warn(`openclaw-memory-rebac: failed to write owner for agent:${agentId}: ${err}`);
             }

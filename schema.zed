@@ -1,4 +1,6 @@
-definition person {}
+definition person {
+    relation agent: agent
+}
 
 definition agent {
     relation owner: person
@@ -16,8 +18,9 @@ definition memory_fragment {
     relation involves: person | agent
     relation shared_by: person | agent
 
-    // Can view if: directly involved, shared it, or have access to the source group
-    permission view = involves + shared_by + source_group->access
+    // Can view if: directly involved, shared it, have access to the source group,
+    // or are an agent whose owner is involved (involves->agent traversal)
+    permission view = involves + shared_by + source_group->access + involves->agent
     // Can delete if: you shared it (owner-level control)
     permission delete = shared_by
 }

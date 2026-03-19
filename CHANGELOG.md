@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.3] - 2026-03-19
+
+### Added
+
+- **SpiceDB schema: `involves->agent` traversal**: Agents can now view memory fragments where their owner person is in `involves`, resolved entirely within SpiceDB via `involves->agent` arrow permission. No code-level owner resolution needed for permission checks.
+- **Bidirectional identity tuples**: `link-identity` and startup identity writing now create both `agent:X#owner@person:Y` and `person:Y#agent@agent:X` relationships, enabling the `involves->agent` schema traversal.
+
+### Changed
+
+- **`person` definition** now has `relation agent: agent` for reverse lookups.
+- **`memory_fragment.view` permission** now includes `involves->agent` in addition to existing paths.
+
 ## [0.3.2] - 2026-03-19
 
 ### Fixed

@@ -643,14 +643,23 @@ export function registerCommands(cmd: Command, ctx: CliContext): void {
     .argument("<person-id>", "Owner person ID")
     .action(async (agentId: string, personId: string) => {
       try {
-        await spicedb.writeRelationships([{
-          resourceType: "agent",
-          resourceId: agentId,
-          relation: "owner",
-          subjectType: "person",
-          subjectId: personId,
-        }]);
-        console.log(`Linked agent:${agentId} → person:${personId}`);
+        await spicedb.writeRelationships([
+          {
+            resourceType: "agent",
+            resourceId: agentId,
+            relation: "owner",
+            subjectType: "person",
+            subjectId: personId,
+          },
+          {
+            resourceType: "person",
+            resourceId: personId,
+            relation: "agent",
+            subjectType: "agent",
+            subjectId: agentId,
+          },
+        ]);
+        console.log(`Linked agent:${agentId} ↔ person:${personId}`);
       } catch (err) {
         console.error(`Failed to write identity link: ${err instanceof Error ? err.message : String(err)}`);
       }
@@ -671,14 +680,23 @@ export function registerCommands(cmd: Command, ctx: CliContext): void {
           console.log(`No owner link found for agent:${agentId}`);
           return;
         }
-        await spicedb.deleteRelationships([{
-          resourceType: "agent",
-          resourceId: agentId,
-          relation: "owner",
-          subjectType: "person",
-          subjectId: ownerId,
-        }]);
-        console.log(`Unlinked agent:${agentId} (was → person:${ownerId})`);
+        await spicedb.deleteRelationships([
+          {
+            resourceType: "agent",
+            resourceId: agentId,
+            relation: "owner",
+            subjectType: "person",
+            subjectId: ownerId,
+          },
+          {
+            resourceType: "person",
+            resourceId: ownerId,
+            relation: "agent",
+            subjectType: "agent",
+            subjectId: agentId,
+          },
+        ]);
+        console.log(`Unlinked agent:${agentId} (was ↔ person:${ownerId})`);
       } catch (err) {
         console.error(`Failed to remove identity link: ${err instanceof Error ? err.message : String(err)}`);
       }

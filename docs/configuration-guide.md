@@ -265,7 +265,9 @@ npm run cli -- schema-write
 The schema defines:
 
 ```zed
-definition person {}
+definition person {
+    relation agent: agent
+}
 
 definition agent {
     relation owner: person
@@ -283,7 +285,8 @@ definition memory_fragment {
     relation involves: person | agent
     relation shared_by: person | agent
 
-    permission view = involves + shared_by + source_group->access
+    // involves->agent: if a person is involved, their agent can also view
+    permission view = involves + shared_by + source_group->access + involves->agent
     permission delete = shared_by
 }
 ```

@@ -168,7 +168,9 @@ When enabled (default: `true`), the plugin captures the last N messages from eac
 The SpiceDB schema defines four object types:
 
 ```
-definition person {}
+definition person {
+    relation agent: agent
+}
 
 definition agent {
     relation owner: person
@@ -186,7 +188,8 @@ definition memory_fragment {
     relation involves: person | agent
     relation shared_by: person | agent
 
-    permission view = involves + shared_by + source_group->access
+    // involves->agent: if a person is involved, their agent can also view
+    permission view = involves + shared_by + source_group->access + involves->agent
     permission delete = shared_by
 }
 ```

@@ -601,7 +601,14 @@ describe("link-identity command", () => {
       subjectType: "person",
       subjectId: "U0123ABC",
     });
-    expect(consoleOutput).toContain("Linked agent:my-agent → person:U0123ABC");
+    expect(call[1]).toMatchObject({
+      resourceType: "person",
+      resourceId: "U0123ABC",
+      relation: "agent",
+      subjectType: "agent",
+      subjectId: "my-agent",
+    });
+    expect(consoleOutput).toContain("Linked agent:my-agent ↔ person:U0123ABC");
   });
 });
 
