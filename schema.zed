@@ -1,5 +1,6 @@
 definition person {
     relation agent: agent
+    permission represents = agent
 }
 
 definition agent {
@@ -20,7 +21,7 @@ definition memory_fragment {
 
     // Can view if: directly involved, shared it, have access to the source group,
     // or are an agent whose owner is involved (involves->agent traversal)
-    permission view = involves + shared_by + source_group->access + involves->agent
+    permission view = involves + shared_by + source_group->access + involves->represents
     // Can delete if: you shared it (owner-level control)
     permission delete = shared_by
 }

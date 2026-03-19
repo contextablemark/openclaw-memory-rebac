@@ -170,6 +170,7 @@ The SpiceDB schema defines four object types:
 ```
 definition person {
     relation agent: agent
+    permission represents = agent
 }
 
 definition agent {
@@ -188,8 +189,8 @@ definition memory_fragment {
     relation involves: person | agent
     relation shared_by: person | agent
 
-    // involves->agent: if a person is involved, their agent can also view
-    permission view = involves + shared_by + source_group->access + involves->agent
+    // involves->represents: if a person is involved, their agent can also view
+    permission view = involves + shared_by + source_group->access + involves->represents
     permission delete = shared_by
 }
 ```
