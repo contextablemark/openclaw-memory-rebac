@@ -46,6 +46,8 @@ Recall: agent:main calls memory_recall
 openclaw setup --workspace ~/.openclaw/workspace-stenographer
 ```
 
+> **Note:** `openclaw setup` may change the default agent in your `openclaw.json`. After running it, check `~/.openclaw/openclaw.json` and restore your default agent configuration if needed before proceeding to Step 2.
+
 Then edit `~/.openclaw/workspace-stenographer/SOUL.md`:
 
 ```markdown
