@@ -3,7 +3,6 @@ import {
   searchAuthorizedMemories,
   formatResultsForContext,
   formatDualResults,
-  deduplicateSessionResults,
   type SearchResult,
 } from "./search.js";
 import type { MemoryBackend } from "./backend.js";
@@ -235,6 +234,88 @@ describe("searchAuthorizedMemories", () => {
     expect(results).toHaveLength(5);
     expect(results.map((r) => r.type)).toEqual(["completion", "summary", "chunk", "fact", "node"]);
   });
+
+  test("prefers searchGroups() when available (single multi-group call)", async () => {
+    const searchGroup = vi.fn();
+    const searchGroups = vi.fn().mockResolvedValue([
+      { type: "fact", uuid: "f1", group_id: "g1", summary: "Relevant fact", context: "g1", created_at: "2026-01-15T00:00:00Z", score: 1.0 },
+      { type: "fact", uuid: "f2", group_id: "g2", summary: "Less relevant", context: "g2", created_at: "2026-01-16T00:00:00Z", score: 0.5 },
+    ]);
+    const backend = mockBackend({ searchGroup, searchGroups });
+
+    const results = await searchAuthorizedMemories(backend, {
+      query: "test",
+      groupIds: ["g1", "g2"],
+    });
+
+    // searchGroups was called once with all groups
+    expect(searchGroups).toHaveBeenCalledTimes(1);
+    expect(searchGroups).toHaveBeenCalledWith({
+      query: "test",
+      groupIds: ["g1", "g2"],
+      limit: 10,
+      sessionId: undefined,
+    });
+    // searchGroup was NOT called
+    expect(searchGroup).not.toHaveBeenCalled();
+    // Results preserve searchGroups order
+    expect(results).toHaveLength(2);
+    expect(results[0].uuid).toBe("f1");
+    expect(results[1].uuid).toBe("f2");
+  });
+
+  test("falls back to searchGroup() fan-out when searchGroups is undefined", async () => {
+    const searchGroup = vi.fn().mockResolvedValue([
+      { type: "fact", uuid: "f1", group_id: "g1", summary: "A fact", context: "g1", created_at: "2026-01-15T00:00:00Z" },
+    ]);
+    // No searchGroups on this backend
+    const backend = mockBackend({ searchGroup });
+
+    const results = await searchAuthorizedMemories(backend, {
+      query: "test",
+      groupIds: ["g1", "g2"],
+    });
+
+    expect(searchGroup).toHaveBeenCalledTimes(2);
+    expect(results.length).toBeGreaterThanOrEqual(1);
+  });
+
+  test("searchGroups deduplicates by UUID", async () => {
+    const searchGroups = vi.fn().mockResolvedValue([
+      { type: "fact", uuid: "f1", group_id: "g1", summary: "Dup 1", context: "g1", created_at: "2026-01-15T00:00:00Z" },
+      { type: "fact", uuid: "f1", group_id: "g2", summary: "Dup 2", context: "g2", created_at: "2026-01-15T00:00:00Z" },
+    ]);
+    const backend = mockBackend({ searchGroups });
+
+    const results = await searchAuthorizedMemories(backend, {
+      query: "test",
+      groupIds: ["g1", "g2"],
+    });
+
+    expect(results).toHaveLength(1);
+    expect(results[0].uuid).toBe("f1");
+  });
+
+  test("searchGroups respects limit", async () => {
+    const facts = Array.from({ length: 20 }, (_, i) => ({
+      type: "fact" as const,
+      uuid: `f${i}`,
+      group_id: "g1",
+      summary: `Fact ${i}`,
+      context: "g1",
+      created_at: `2026-01-${String(i + 1).padStart(2, "0")}T00:00:00Z`,
+    }));
+    const searchGroups = vi.fn().mockResolvedValue(facts);
+    const backend = mockBackend({ searchGroups });
+
+    const results = await searchAuthorizedMemories(backend, {
+      query: "test",
+      groupIds: ["g1"],
+      limit: 5,
+    });
+
+    expect(results).toHaveLength(5);
+  });
 });
 
 describe("formatResultsForContext", () => {
@@ -320,36 +401,3 @@ describe("formatDualResults", () => {
   });
 });
 
-describe("deduplicateSessionResults", () => {
-  test("removes session results that exist in long-term", () => {
-    const longTerm: SearchResult[] = [
-      { type: "chunk", uuid: "c1", group_id: "main", summary: "Fact about Mark", context: "main", created_at: "2026-01-15" },
-    ];
-    const session: SearchResult[] = [
-      { type: "chunk", uuid: "c1", group_id: "session-s1", summary: "Fact about Mark", context: "session", created_at: "2026-01-15" },
-      { type: "chunk", uuid: "c2", group_id: "session-s1", summary: "New fact", context: "session", created_at: "2026-01-16" },
-    ];
-    const deduped = deduplicateSessionResults(longTerm, session);
-    expect(deduped).toHaveLength(1);
-    expect(deduped[0].uuid).toBe("c2");
-  });
-
-  test("returns all session results when no overlap", () => {
-    const longTerm: SearchResult[] = [
-      { type: "chunk", uuid: "c1", group_id: "main", summary: "Mark", context: "main", created_at: "2026-01-15" },
-    ];
-    const session: SearchResult[] = [
-      { type: "chunk", uuid: "c2", group_id: "session-s1", summary: "Jane", context: "session", created_at: "2026-01-15" },
-    ];
-    const deduped = deduplicateSessionResults(longTerm, session);
-    expect(deduped).toHaveLength(1);
-    expect(deduped[0].uuid).toBe("c2");
-  });
-
-  test("handles empty inputs", () => {
-    expect(deduplicateSessionResults([], [])).toEqual([]);
-    expect(deduplicateSessionResults([], [
-      { type: "chunk", uuid: "c1", group_id: "session-s1", summary: "X", context: "X", created_at: "2026-01-01" },
-    ])).toHaveLength(1);
-  });
-});

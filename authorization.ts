@@ -190,6 +190,31 @@ export async function canWriteToGroup(
 }
 
 /**
+ * Discover which groups a set of memory fragments belong to.
+ * Reads the `source_group` relation for each fragment ID.
+ * Returns deduplicated group IDs.
+ */
+export async function lookupFragmentSourceGroups(
+  spicedb: SpiceDbClient,
+  fragmentIds: string[],
+  zedToken?: string,
+): Promise<string[]> {
+  const groupIds = new Set<string>();
+  for (const fid of fragmentIds) {
+    const tuples = await spicedb.readRelationships({
+      resourceType: "memory_fragment",
+      resourceId: fid,
+      relation: "source_group",
+      consistency: tokenConsistency(zedToken),
+    });
+    for (const t of tuples) {
+      if (t.subjectType === "group") groupIds.add(t.subjectId);
+    }
+  }
+  return Array.from(groupIds);
+}
+
+/**
  * Ensure a subject is registered as a member of a group.
  * Idempotent (uses TOUCH operation).
  */

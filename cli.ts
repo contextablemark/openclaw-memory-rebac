@@ -24,6 +24,7 @@ import {
   lookupAuthorizedGroups,
   lookupAgentOwner,
   lookupViewableFragments,
+  lookupFragmentSourceGroups,
   writeFragmentRelationships,
   ensureGroupMembership,
   type Subject,
@@ -107,38 +108,49 @@ export function registerCommands(cmd: Command, ctx: CliContext): void {
         : [];
 
       // Fragment-based recall via involves/view permission
+      // Uses search-then-post-filter: search source groups for query relevance,
+      // then intersect with authorized fragment set for security.
       let fragmentResults: typeof groupResults = [];
-      if (backend.getFragmentsByIds) {
-        try {
-          // Determine the person to search as
-          let personSubject: Subject | undefined;
-          if (subject.type === "person") {
-            // Direct person search — look up fragments they can view
-            personSubject = subject;
-          } else if (subject.type === "agent") {
-            // Agent search — resolve owner identity first
-            const ownerId = await lookupAgentOwner(spicedb, subject.id, token);
-            if (ownerId) {
-              personSubject = { type: "person", id: ownerId };
-            }
+      try {
+        // Determine the person to search as
+        let personSubject: Subject | undefined;
+        if (subject.type === "person") {
+          personSubject = subject;
+        } else if (subject.type === "agent") {
+          const ownerId = await lookupAgentOwner(spicedb, subject.id, token);
+          if (ownerId) {
+            personSubject = { type: "person", id: ownerId };
           }
+        }
 
-          if (personSubject) {
-            const viewableIds = await lookupViewableFragments(spicedb, personSubject, token);
-            if (viewableIds.length > 0) {
-              const groupResultIds = new Set(groupResults.map((r) => r.uuid));
-              const newIds = viewableIds.filter((id) => !groupResultIds.has(id));
-              if (newIds.length > 0) {
-                fragmentResults = await backend.getFragmentsByIds(newIds);
+        if (personSubject) {
+          const viewableIds = await lookupViewableFragments(spicedb, personSubject, token);
+          if (viewableIds.length > 0) {
+            const groupResultIds = new Set(groupResults.map((r) => r.uuid));
+            const newIds = viewableIds.filter((id) => !groupResultIds.has(id));
+            if (newIds.length > 0) {
+              // Discover which groups the viewable fragments belong to
+              const ownerGroups = await lookupFragmentSourceGroups(spicedb, newIds, token);
+              const alreadySearched = new Set(authorizedGroups);
+              const newGroups = ownerGroups.filter(g => !alreadySearched.has(g));
+              if (newGroups.length > 0) {
+                const candidateResults = await searchAuthorizedMemories(backend, {
+                  query,
+                  groupIds: newGroups,
+                  limit: parseInt(opts.limit),
+                });
+                // Post-filter: only keep results the person is authorized to view
+                const viewableSet = new Set(newIds);
+                fragmentResults = candidateResults.filter(r => viewableSet.has(r.uuid));
               }
             }
-            if (fragmentResults.length > 0) {
-              console.log(`  + ${fragmentResults.length} result(s) via involves (${personSubject.type}:${personSubject.id})`);
-            }
           }
-        } catch {
-          // Fragment lookup failed — proceed with group results only
+          if (fragmentResults.length > 0) {
+            console.log(`  + ${fragmentResults.length} result(s) via involves (${personSubject.type}:${personSubject.id})`);
+          }
         }
+      } catch {
+        // Fragment lookup failed — proceed with group results only
       }
 
       const allResults = [...groupResults, ...fragmentResults];

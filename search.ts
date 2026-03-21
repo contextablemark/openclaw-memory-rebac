@@ -1,9 +1,9 @@
 /**
- * Parallel Multi-Group Search + Merge/Re-rank
+ * Multi-Group Search with backend-native relevance ranking.
  *
- * Backend-agnostic: delegates per-group search to MemoryBackend.searchGroup().
- * Issues parallel calls (one per authorized group_id), merges results,
- * deduplicates by UUID, and re-ranks by score then recency.
+ * Prefers MemoryBackend.searchGroups() — a single call with all group_ids
+ * so the backend applies cross-group relevance ranking (e.g. Graphiti RRF).
+ * Falls back to per-group fan-out via searchGroup() when unavailable.
  */
 
 import type { MemoryBackend, SearchResult } from "./backend.js";
@@ -26,9 +26,14 @@ export type SearchOptions = {
 // ============================================================================
 
 /**
- * Search across multiple authorized group_ids in parallel.
- * Merges and deduplicates results, returning up to `limit` items sorted by
- * score (desc) then recency (desc).
+ * Search across multiple authorized group_ids.
+ *
+ * Prefers backend.searchGroups() when available — sends all group_ids in a
+ * single call so the backend can apply cross-group relevance ranking
+ * (e.g. Graphiti's RRF: cosine similarity + BM25).
+ *
+ * Falls back to per-group fan-out via backend.searchGroup() when the backend
+ * doesn't implement multi-group search.
  */
 export async function searchAuthorizedMemories(
   backend: MemoryBackend,
@@ -40,7 +45,19 @@ export async function searchAuthorizedMemories(
     return [];
   }
 
-  // Fan out parallel searches across all authorized groups
+  // Prefer single multi-group search — preserves backend relevance ranking
+  if (backend.searchGroups) {
+    const results = await backend.searchGroups({ query, groupIds, limit, sessionId });
+    // Deduplicate by UUID (defensive — single call shouldn't produce dupes)
+    const seen = new Set<string>();
+    return results.filter((r) => {
+      if (seen.has(r.uuid)) return false;
+      seen.add(r.uuid);
+      return true;
+    }).slice(0, limit);
+  }
+
+  // Fallback: fan out parallel searches across all authorized groups
   const promises = groupIds.map((groupId) =>
     backend.searchGroup({ query, groupId, limit, sessionId }),
   );
@@ -125,15 +142,4 @@ function formatResultLine(r: SearchResult, idx: number): string {
     r.type === "summary" ? "summary" :
     "completion";
   return `${idx}. [${typeLabel}:${r.uuid}] ${r.summary} (${r.context})`;
-}
-
-/**
- * Deduplicate session results against long-term results (by UUID).
- */
-export function deduplicateSessionResults(
-  longTermResults: SearchResult[],
-  sessionResults: SearchResult[],
-): SearchResult[] {
-  const longTermIds = new Set(longTermResults.map((r) => r.uuid));
-  return sessionResults.filter((r) => !longTermIds.has(r.uuid));
 }

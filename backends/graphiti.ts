@@ -55,6 +55,7 @@ type FactResult = {
   invalid_at: string | null;
   created_at: string;
   expired_at: string | null;
+  group_id?: string;
 };
 
 type SearchRequest = {
@@ -209,6 +210,38 @@ export class GraphitiBackend implements MemoryBackend {
     }));
   }
 
+  async searchGroups(params: {
+    query: string;
+    groupIds: string[];
+    limit: number;
+    sessionId?: string;
+  }): Promise<SearchResult[]> {
+    const { query, groupIds, limit } = params;
+
+    if (groupIds.length === 0) return [];
+
+    const searchRequest: SearchRequest = {
+      group_ids: groupIds,
+      query,
+      max_facts: limit,
+    };
+
+    const response = await this.restCall<SearchResults>("POST", "/search", searchRequest);
+    const facts = response.facts ?? [];
+
+    // Derive implicit relevance score from response position —
+    // Graphiti's /search returns results ranked by RRF (cosine + BM25).
+    return facts.map((f, index) => ({
+      type: "fact" as const,
+      uuid: f.uuid,
+      group_id: f.group_id ?? groupIds[0],
+      summary: f.fact,
+      context: f.name,
+      created_at: f.created_at,
+      score: 1.0 - index / Math.max(facts.length, 1),
+    }));
+  }
+
   async getConversationHistory(sessionId: string, lastN = 10): Promise<ConversationTurn[]> {
     const sessionGroup = `session-${sessionId.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
     try {
@@ -271,26 +304,6 @@ export class GraphitiBackend implements MemoryBackend {
       "GET",
       `/episodes/${encodeURIComponent(groupId)}?last_n=${lastN}`,
     );
-  }
-
-  async getFragmentsByIds(ids: string[]): Promise<SearchResult[]> {
-    const results: SearchResult[] = [];
-    for (const id of ids) {
-      try {
-        const fact = await this.getEntityEdge(id);
-        results.push({
-          type: "fact",
-          uuid: id,
-          group_id: "unknown",
-          summary: fact.fact,
-          context: fact.name,
-          created_at: fact.created_at,
-        });
-      } catch {
-        // Fragment not found or unreachable — skip
-      }
-    }
-    return results;
   }
 
   async discoverFragmentIds(episodeId: string): Promise<string[]> {
