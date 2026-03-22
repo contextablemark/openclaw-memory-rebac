@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.7] - 2026-03-22
+
+### Fixed
+
+- **Auto-capture skips user messages** ([#19](https://github.com/contextablemark/openclaw-memory-rebac/issues/19)): The `agent_end` auto-capture filter discarded any message containing `<relevant-memories>`, which matched virtually all user messages because `autoRecall` injects that block into user context via `prependContext`. Now strips the `<relevant-memories>` and `<memory-tools>` XML blocks from message text instead of skipping the entire message, preserving the user's actual content in episodic captures. Same fix applied to the CLI `import` transcript filter for consistency.
+
 ## [0.3.6] - 2026-03-22
 
 ### Added
