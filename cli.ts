@@ -405,11 +405,9 @@ export function registerCommands(cmd: Command, ctx: CliContext): void {
                     .map((b: unknown) => (b as Record<string, unknown>).text as string)
                     .join("\n");
                 }
-                if (
-                  text && text.length >= 5 &&
-                  !text.includes("<relevant-memories>") &&
-                  !text.includes("<memory-tools>")
-                ) {
+                text = text.replace(/<relevant-memories>[\s\S]*?<\/relevant-memories>/g, "").trim();
+                text = text.replace(/<memory-tools>[\s\S]*?<\/memory-tools>/g, "").trim();
+                if (text && text.length >= 5) {
                   const roleLabel = role === "user" ? "User" : "Assistant";
                   conversationLines.push(`${roleLabel}: ${text}`);
                 }

@@ -700,8 +700,10 @@ const rebacMemoryPlugin = {
               text = textParts.join("\n");
             }
 
+            // Strip injected memory/tool blocks — keep the user's actual content
+            text = text.replace(/<relevant-memories>[\s\S]*?<\/relevant-memories>/g, "").trim();
+            text = text.replace(/<memory-tools>[\s\S]*?<\/memory-tools>/g, "").trim();
             if (!text || text.length < 5) continue;
-            if (text.includes("<relevant-memories>")) continue;
 
             const roleLabel = role === "user" ? "User" : "Assistant";
             conversationLines.unshift(`${roleLabel}: ${text}`);
