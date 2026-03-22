@@ -804,18 +804,10 @@ describe("e2e: stenographer features (per-agent identity + owner-aware recall)",
     const viewableIds = await lookupViewableFragments(spicedb, ownerSubject, fragmentWriteToken);
     expect(viewableIds).toContain(decisionEpisodeId);
 
-    // Step 3: Attempt to fetch fragment details.
-    // Note: viewableIds from SpiceDB are episode UUIDs (written via writeFragmentRelationships).
-    // getFragmentsByIds uses the entity-edge endpoint which only returns facts, not episodes.
-    // In the real recall flow, these IDs would also be used to discover related facts via
-    // the /episodes/{id}/edges endpoint. Here we just verify the SpiceDB chain works.
-    const fragmentDetails = await backend.getFragmentsByIds(viewableIds);
-    console.log(`[steno] Owner-aware recall: ${viewableIds.length} viewable fragment IDs from SpiceDB`);
-    console.log(`[steno] Fragment details fetched via entity-edge: ${fragmentDetails.length} (episode UUIDs won't resolve here)`);
-
     // The critical assertion is that the SpiceDB authorization chain works:
     // agent:personalAgent → owner → person:ownerPerson → involves → memory_fragment:decisionEpisodeId
     // This is verified by the viewableIds assertion above.
+    console.log(`[steno] Owner-aware recall: ${viewableIds.length} viewable fragment IDs from SpiceDB`);
   });
 
   // --------------------------------------------------------------------------

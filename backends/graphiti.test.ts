@@ -165,6 +165,75 @@ describe("GraphitiBackend", () => {
     });
   });
 
+  describe("searchGroups", () => {
+    test("passes all group_ids in a single POST /search call", async () => {
+      const backend = new GraphitiBackend(defaultConfig);
+
+      mockFetch.mockResolvedValueOnce(
+        jsonResponse({
+          facts: [
+            { uuid: "f1", name: "DECIDED", fact: "Use PostgreSQL", created_at: "2026-01-16", group_id: "eng" },
+            { uuid: "f2", name: "WORKS_AT", fact: "Mark works at Acme", created_at: "2026-01-15", group_id: "main" },
+          ],
+        }),
+      );
+
+      const results = await backend.searchGroups({
+        query: "database decision",
+        groupIds: ["main", "eng", "ops"],
+        limit: 10,
+      });
+
+      // Single call with all group_ids
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body as string);
+      expect(body.group_ids).toEqual(["main", "eng", "ops"]);
+      expect(body.max_facts).toBe(10);
+
+      // Results preserve response order with implicit scores
+      expect(results).toHaveLength(2);
+      expect(results[0].uuid).toBe("f1");
+      expect(results[0].group_id).toBe("eng");
+      expect(results[0].score).toBe(1.0);
+      expect(results[1].uuid).toBe("f2");
+      expect(results[1].group_id).toBe("main");
+      expect(results[1].score).toBe(0.5);
+    });
+
+    test("returns empty array for empty groupIds", async () => {
+      const backend = new GraphitiBackend(defaultConfig);
+
+      const results = await backend.searchGroups({
+        query: "test",
+        groupIds: [],
+        limit: 10,
+      });
+
+      expect(results).toEqual([]);
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    test("falls back to first groupId when fact has no group_id", async () => {
+      const backend = new GraphitiBackend(defaultConfig);
+
+      mockFetch.mockResolvedValueOnce(
+        jsonResponse({
+          facts: [
+            { uuid: "f1", name: "TEST", fact: "A fact", created_at: "2026-01-15" },
+          ],
+        }),
+      );
+
+      const results = await backend.searchGroups({
+        query: "test",
+        groupIds: ["default-group", "other"],
+        limit: 10,
+      });
+
+      expect(results[0].group_id).toBe("default-group");
+    });
+  });
+
   describe("healthCheck", () => {
     test("returns true when /healthcheck responds ok", async () => {
       const backend = new GraphitiBackend(defaultConfig);

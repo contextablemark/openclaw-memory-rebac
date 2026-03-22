@@ -5,17 +5,48 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.5] - 2026-03-21
+
+### Changed
+
+- **Single multi-group search**: `searchAuthorizedMemories` now prefers `backend.searchGroups()` — a single call with all authorized group IDs — so the backend applies cross-group relevance ranking (Graphiti RRF: cosine similarity + BM25). Falls back to per-group fan-out when `searchGroups()` is not implemented. This fixes search relevance degradation where per-group fan-out discarded backend ranking and fell back to recency-only ordering.
+- **Combined recall path in `memory_recall` and `before_agent_start`**: Long-term and session groups are now searched in a single `searchAuthorizedMemories` call (instead of two separate calls), then results are split by group type for formatting. Reduces round-trips and leverages unified ranking.
+- **Pin all dependency versions**: Replaced semver ranges with exact versions for supply-chain stability (`@authzed/authzed-node@1.6.1`, `@grpc/grpc-js@1.14.3`, `commander@13.1.0`, `dotenv@17.3.1`, `typescript@5.9.3`, `vitest@4.0.18`).
+- **Pin Graphiti Docker image**: Changed `FROM zepai/graphiti:latest` to `FROM zepai/graphiti:0.22.0` with upgrade audit documenting which overlay patches are still needed at upstream v0.28.2 (5 of 6).
+
+### Added
+
+- **`searchGroups()` on `MemoryBackend` interface**: Optional method for backends that support multi-group search in a single call. `GraphitiBackend` implements it using POST `/search` with multiple `group_ids`.
+
+### Removed
+
+- **`deduplicateSessionResults()`**: Dead code after search consolidation — session dedup is now handled by the unified search path.
+
+## [0.3.4] - 2026-03-21
+
+### Fixed
+
+- **Owner-aware recall now query-relevant**: Previously, the owner-aware recall path (`involves`-based) fetched all viewable fragments by ID without query filtering, returning identical results regardless of what the user asked. Now uses a search-then-post-filter approach: discovers source groups of viewable fragments, searches those groups with the actual query via Graphiti, then post-filters results against the authorized fragment set. This ensures both query relevance (semantic search) and authorization security (SpiceDB allow-list).
+
+### Added
+
+- **`lookupFragmentSourceGroups` helper** (`authorization.ts`): Discovers which groups a set of memory fragments belong to by reading `source_group` relationships from SpiceDB. Used by the search-then-post-filter recall pipeline.
+
+### Removed
+
+- **`getFragmentsByIds` backend method**: Removed from `MemoryBackend` interface and `GraphitiBackend` — no longer needed now that owner-aware recall uses search-then-post-filter instead of direct fragment fetching.
+
 ## [0.3.3] - 2026-03-19
 
 ### Added
 
-- **SpiceDB schema: `involves->agent` traversal**: Agents can now view memory fragments where their owner person is in `involves`, resolved entirely within SpiceDB via `involves->agent` arrow permission. No code-level owner resolution needed for permission checks.
-- **Bidirectional identity tuples**: `link-identity` and startup identity writing now create both `agent:X#owner@person:Y` and `person:Y#agent@agent:X` relationships, enabling the `involves->agent` schema traversal.
+- **SpiceDB schema: `involves->represents` traversal**: Agents can now view memory fragments where their owner person is in `involves`, resolved entirely within SpiceDB via `involves->represents` arrow permission. No code-level owner resolution needed for permission checks.
+- **Bidirectional identity tuples**: `link-identity` and startup identity writing now create both `agent:X#owner@person:Y` and `person:Y#agent@agent:X` relationships, enabling the `involves->represents` schema traversal.
 
 ### Changed
 
-- **`person` definition** now has `relation agent: agent` for reverse lookups.
-- **`memory_fragment.view` permission** now includes `involves->agent` in addition to existing paths.
+- **`person` definition** now has `relation agent: agent` and `permission represents = agent` for reverse lookups.
+- **`memory_fragment.view` permission** now includes `involves->represents` in addition to existing paths.
 
 ## [0.3.2] - 2026-03-19
 
@@ -47,7 +78,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Identity linking (`identities` config)**: New `identities` config field maps agent IDs to their owner person IDs (e.g., Slack user IDs). At plugin startup, `agent:<agentId> #owner person:<personId>` relationships are written to SpiceDB, activating the existing `act_as` permission in the authorization schema. This enables cross-agent recall without any SpiceDB schema changes.
 - **Owner-aware recall in `memory_recall`**: When the calling agent has an owner (via `identities`), `memory_recall` now runs a second search path in parallel: it looks up the agent's owner person ID, queries SpiceDB for all `memory_fragment` IDs where that person is in `involves`, fetches fragment details from the backend, and merges them with the group-based results. This enables scenarios like: stenographer stores a decision with `involves: [person:U0123ABC]`, and later Cara's personal agent (linked to `person:U0123ABC` via `identities`) can discover that decision even though it was stored in a group the personal agent doesn't belong to.
 - **`lookupAgentOwner` helper** (`authorization.ts`): Queries SpiceDB for `agent:<id> #owner` relationships and returns the owner's person ID, or `undefined` if no owner is linked.
-- **`getFragmentsByIds` backend method** (`backend.ts`, `backends/graphiti.ts`): Optional method on the `MemoryBackend` interface to fetch fragment details by their SpiceDB-tracked IDs. The Graphiti implementation uses the `entity-edge` endpoint. Used by owner-aware recall to hydrate fragment IDs discovered via `involves` permissions.
+- **`getFragmentsByIds` backend method** (`backend.ts`, `backends/graphiti.ts`): Optional method on the `MemoryBackend` interface to fetch fragment details by their SpiceDB-tracked IDs. The Graphiti implementation uses the `entity-edge` endpoint. *(Removed in 0.3.3 — replaced by search-then-post-filter approach.)*
 - **Stenographer agent runbook** (`docs/stenographer-runbook.md`): Comprehensive setup guide for deploying a passive Slack-monitoring agent that observes channels, detects decisions/action items, and stores them with `involves` relationships for cross-agent access control. Includes SOUL.md template, `openclaw.json` configuration, verification checklist, troubleshooting, and architecture diagram.
 - **Unit tests**: 6 new tests covering per-agent identity, identity linking, owner-aware recall, and fallback behavior.
 - **E2E integration tests**: 7 new tests exercising the full stenographer feature set against live SpiceDB + Graphiti — decision storage with `involves`, permission enforcement (view vs. delete), per-agent group isolation, owner-aware fragment discovery, end-to-end agent→owner→involves chain, and unauthorized agent denial.

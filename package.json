@@ -1,6 +1,6 @@
 {
   "name": "@contextableai/openclaw-memory-rebac",
-  "version": "0.3.3",
+  "version": "0.3.5",
   "description": "OpenClaw two-layer memory plugin: SpiceDB ReBAC authorization + Graphiti knowledge graph",
   "type": "module",
   "license": "MIT",
@@ -43,16 +43,16 @@
     "test:e2e": "OPENCLAW_LIVE_TEST=1 vitest run --config vitest.e2e.config.ts"
   },
   "dependencies": {
-    "@authzed/authzed-node": "^1.2.0",
-    "@grpc/grpc-js": "^1.14.3",
+    "@authzed/authzed-node": "1.6.1",
+    "@grpc/grpc-js": "1.14.3",
     "@sinclair/typebox": "0.34.48",
-    "commander": "^13.1.0"
+    "commander": "13.1.0"
   },
   "devDependencies": {
-    "dotenv": "^17.3.1",
+    "dotenv": "17.3.1",
     "openclaw": "*",
-    "typescript": "^5.9.3",
-    "vitest": "^4.0.18"
+    "typescript": "5.9.3",
+    "vitest": "4.0.18"
   },
   "publishConfig": {
     "access": "public"
@@ -62,7 +62,7 @@
       "./dist/index.js"
     ],
     "install": {
-      "npmSpec": "@contextableai/openclaw-memory-rebac",
+      "npmSpec": "@contextableai/openclaw-memory-rebac@0.3.5",
       "localPath": "extensions/openclaw-memory-rebac",
       "defaultChoice": "npm"
     }

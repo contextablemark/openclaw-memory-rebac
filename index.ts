@@ -28,6 +28,7 @@ import { SpiceDbClient } from "./spicedb.js";
 import {
   lookupAuthorizedGroups,
   lookupViewableFragments,
+  lookupFragmentSourceGroups,
   lookupAgentOwner,
   writeFragmentRelationships,
   deleteFragmentRelationships,
@@ -39,7 +40,6 @@ import {
 import {
   searchAuthorizedMemories,
   formatDualResults,
-  deduplicateSessionResults,
 } from "./search.js";
 import { registerCommands } from "./cli.js";
 
@@ -188,33 +188,29 @@ const rebacMemoryPlugin = {
             }
           }
 
-          // Group-based search (existing path)
-          const [longTermResults, rawSessionResults] = await Promise.all([
-            longTermGroups.length > 0
-              ? searchAuthorizedMemories(backend, {
-                  query,
-                  groupIds: longTermGroups,
-                  limit,
-                  sessionId: state.sessionId,
-                })
-              : Promise.resolve([]),
-            sessionGroups.length > 0
-              ? searchAuthorizedMemories(backend, {
-                  query,
-                  groupIds: sessionGroups,
-                  limit,
-                  sessionId: state.sessionId,
-                })
-              : Promise.resolve([]),
-          ]);
+          // Single multi-group search — lets the backend rank all results together
+          const allGroups = [...longTermGroups, ...sessionGroups];
+          const allGroupResults = allGroups.length > 0
+            ? await searchAuthorizedMemories(backend, {
+                query,
+                groupIds: allGroups,
+                limit,
+                sessionId: state.sessionId,
+              })
+            : [];
 
-          const sessionResults = deduplicateSessionResults(longTermResults, rawSessionResults);
-          const groupResults = [...longTermResults, ...sessionResults];
+          // Split results by group type for formatting
+          const sessionGroupSet = new Set(sessionGroups);
+          const longTermResults = allGroupResults.filter((r) => !sessionGroupSet.has(r.group_id));
+          const sessionResults = allGroupResults.filter((r) => sessionGroupSet.has(r.group_id));
+          const groupResults = allGroupResults;
 
           // Owner-aware fragment search: if the subject is an agent with an owner,
           // also find fragments where the owner is in `involves`.
+          // Uses search-then-post-filter: search the source groups for query relevance,
+          // then intersect with the authorized fragment set for security.
           let ownerFragmentResults: typeof groupResults = [];
-          if (subject.type === "agent" && backend.getFragmentsByIds) {
+          if (subject.type === "agent") {
             try {
               const ownerId = await lookupAgentOwner(spicedb, subject.id, state.lastWriteToken);
               if (ownerId) {
@@ -224,7 +220,20 @@ const rebacMemoryPlugin = {
                   const groupResultIds = new Set(groupResults.map((r) => r.uuid));
                   const newIds = viewableIds.filter((id) => !groupResultIds.has(id));
                   if (newIds.length > 0) {
-                    ownerFragmentResults = await backend.getFragmentsByIds(newIds);
+                    // Discover which groups the viewable fragments belong to
+                    const ownerGroups = await lookupFragmentSourceGroups(spicedb, newIds, state.lastWriteToken);
+                    const alreadySearched = new Set([...longTermGroups, ...sessionGroups]);
+                    const newGroups = ownerGroups.filter(g => !alreadySearched.has(g));
+                    if (newGroups.length > 0) {
+                      const candidateResults = await searchAuthorizedMemories(backend, {
+                        query,
+                        groupIds: newGroups,
+                        limit,
+                      });
+                      // Post-filter: only keep results the owner is authorized to view
+                      const viewableSet = new Set(newIds);
+                      ownerFragmentResults = candidateResults.filter(r => viewableSet.has(r.uuid));
+                    }
                   }
                 }
               }
@@ -584,27 +593,21 @@ const rebacMemoryPlugin = {
             if (!sessionGroups.includes(sg)) sessionGroups.push(sg);
           }
 
-          const [longTermResults, rawSessionResults] = await Promise.all([
-            longTermGroups.length > 0
-              ? searchAuthorizedMemories(backend, {
-                  query: event.prompt,
-                  groupIds: longTermGroups,
-                  limit: 5,
-                  sessionId: state.sessionId,
-                })
-              : Promise.resolve([]),
-            sessionGroups.length > 0
-              ? searchAuthorizedMemories(backend, {
-                  query: event.prompt,
-                  groupIds: sessionGroups,
-                  limit: 3,
-                  sessionId: state.sessionId,
-                })
-              : Promise.resolve([]),
-          ]);
+          const autoRecallLimit = 8;
+          const allGroups = [...longTermGroups, ...sessionGroups];
+          const allResults = allGroups.length > 0
+            ? await searchAuthorizedMemories(backend, {
+                query: event.prompt,
+                groupIds: allGroups,
+                limit: autoRecallLimit,
+                sessionId: state.sessionId,
+              })
+            : [];
 
-          const sessionResults = deduplicateSessionResults(longTermResults, rawSessionResults);
-          const totalCount = longTermResults.length + sessionResults.length;
+          const sessionGroupSet = new Set(sessionGroups);
+          const longTermResults = allResults.filter((r) => !sessionGroupSet.has(r.group_id));
+          const sessionResults = allResults.filter((r) => sessionGroupSet.has(r.group_id));
+          const totalCount = allResults.length;
 
           const toolHint =
             "<memory-tools>\n" +

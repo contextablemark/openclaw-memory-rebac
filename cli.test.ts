@@ -249,18 +249,27 @@ describe("search command", () => {
     expect(consoleOutput).toContain("No results found.");
   });
 
-  test("search as person finds fragments via involves", async () => {
-    const backend = createMockBackend({
-      searchGroup: vi.fn().mockResolvedValue([]),
-      getFragmentsByIds: vi.fn().mockResolvedValue([
-        { type: "fact", uuid: "frag-1", group_id: "steno-group", summary: "Decision: use PostgreSQL", context: "#engineering" },
-      ]),
+  test("search as person finds fragments via involves with post-filter", async () => {
+    const searchGroupMock = vi.fn().mockImplementation((params: { groupId: string; query: string }) => {
+      if (params.groupId === "steno-observations") {
+        // Graphiti returns all matches from this group — includes authorized and unauthorized
+        return Promise.resolve([
+          { type: "fact", uuid: "frag-1", group_id: "steno-observations", summary: "Decision: use PostgreSQL", context: "#engineering", created_at: "2026-01-01T00:00:00Z" },
+          { type: "fact", uuid: "frag-unauthorized", group_id: "steno-observations", summary: "Other decision", context: "#design", created_at: "2026-01-02T00:00:00Z" },
+        ]);
+      }
+      return Promise.resolve([]);
     });
+    const backend = createMockBackend({ searchGroup: searchGroupMock });
     const spicedb = createMockSpiceDb();
     // lookupResources: first call for groups (empty), second for viewable fragments
     spicedb.lookupResources = vi.fn()
       .mockResolvedValueOnce([])           // no authorized groups
-      .mockResolvedValueOnce(["frag-1"]);  // viewable fragment via involves
+      .mockResolvedValueOnce(["frag-1"]);  // only frag-1 is viewable via involves
+    // readRelationships: return source_group for frag-1
+    spicedb.readRelationships = vi.fn().mockResolvedValue([
+      { resourceType: "memory_fragment", resourceId: "frag-1", relation: "source_group", subjectType: "group", subjectId: "steno-observations" },
+    ]);
     const { program, actions } = createMockProgram();
     const ctx = createMockContext(backend, spicedb);
 
@@ -268,9 +277,10 @@ describe("search command", () => {
 
     await actions["search"]("PostgreSQL", { limit: "10", as: "person:U0123ABC" });
 
-    expect(backend.getFragmentsByIds).toHaveBeenCalledWith(["frag-1"]);
     expect(consoleOutput.some(line => line.includes("via involves"))).toBe(true);
     expect(consoleOutput.some(line => line.includes("frag-1"))).toBe(true);
+    // unauthorized fragment should be filtered out
+    expect(consoleOutput.some(line => line.includes("frag-unauthorized"))).toBe(false);
   });
 });
 

@@ -608,47 +608,61 @@ describe("openclaw-memory-rebac plugin", () => {
       ]);
     });
 
-    // readRelationships → agent has an owner (must match @authzed/authzed-node response shape)
-    mockClient.promises.readRelationships = vi.fn().mockResolvedValue([
-      {
-        relationship: {
-          resource: { objectType: "agent", objectId: "test-agent" },
-          relation: "owner",
-          subject: { object: { objectType: "person", objectId: "U0123ABC" } },
-        },
-      },
-    ]);
+    // readRelationships → agent has an owner, fragments have source_group
+    mockClient.promises.readRelationships = vi.fn().mockImplementation((req: unknown) => {
+      const filter = (req as { relationshipFilter?: { resourceType?: string; optionalRelation?: string } }).relationshipFilter;
+      if (filter?.resourceType === "agent" && filter?.optionalRelation === "owner") {
+        return Promise.resolve([{
+          relationship: {
+            resource: { objectType: "agent", objectId: "test-agent" },
+            relation: "owner",
+            subject: { object: { objectType: "person", objectId: "U0123ABC" } },
+          },
+        }]);
+      }
+      if (filter?.resourceType === "memory_fragment" && filter?.optionalRelation === "source_group") {
+        return Promise.resolve([{
+          relationship: {
+            resource: { objectType: "memory_fragment", objectId: "owner-fragment-1" },
+            relation: "source_group",
+            subject: { object: { objectType: "group", objectId: "steno-observations" } },
+          },
+        }]);
+      }
+      return Promise.resolve([]);
+    });
 
-    // Mock backend search + fragment fetch
-    mockFetch.mockImplementation((url: string) => {
+    // Mock backend search — returns different results per group
+    let searchCallCount = 0;
+    mockFetch.mockImplementation((url: string, init?: { body?: string }) => {
       if (url.includes("/search")) {
-        return Promise.resolve({
-          ok: true,
-          headers: new Headers({ "content-type": "application/json" }),
-          json: () => Promise.resolve({
-            facts: [
-              { uuid: "group-fact-1", name: "Group fact", fact: "From group search", created_at: "2026-01-01T00:00:00Z" },
-            ],
-          }),
-        });
-      }
-      if (url.includes("/entity-edge/owner-fragment-1")) {
-        return Promise.resolve({
-          ok: true,
-          headers: new Headers({ "content-type": "application/json" }),
-          json: () => Promise.resolve({
-            uuid: "owner-fragment-1", name: "Owner fact 1", fact: "Decision about widget", created_at: "2026-01-02T00:00:00Z",
-          }),
-        });
-      }
-      if (url.includes("/entity-edge/owner-fragment-2")) {
-        return Promise.resolve({
-          ok: true,
-          headers: new Headers({ "content-type": "application/json" }),
-          json: () => Promise.resolve({
-            uuid: "owner-fragment-2", name: "Owner fact 2", fact: "Decision about database", created_at: "2026-01-03T00:00:00Z",
-          }),
-        });
+        searchCallCount++;
+        const body = init?.body ? JSON.parse(init.body) : {};
+        const groupIds: string[] = body.group_ids ?? [];
+        if (groupIds.includes("main")) {
+          return Promise.resolve({
+            ok: true,
+            headers: new Headers({ "content-type": "application/json" }),
+            json: () => Promise.resolve({
+              facts: [
+                { uuid: "group-fact-1", name: "Group fact", fact: "From group search", created_at: "2026-01-01T00:00:00Z" },
+              ],
+            }),
+          });
+        }
+        if (groupIds.includes("steno-observations")) {
+          // Graphiti returns all matches from this group — includes both authorized and unauthorized
+          return Promise.resolve({
+            ok: true,
+            headers: new Headers({ "content-type": "application/json" }),
+            json: () => Promise.resolve({
+              facts: [
+                { uuid: "owner-fragment-1", name: "Owner fact 1", fact: "Decision about widget", created_at: "2026-01-02T00:00:00Z" },
+                { uuid: "unauthorized-fragment", name: "Other", fact: "Not in involves", created_at: "2026-01-04T00:00:00Z" },
+              ],
+            }),
+          });
+        }
       }
       return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
     });
@@ -659,11 +673,12 @@ describe("openclaw-memory-rebac plugin", () => {
     const recallTool = registeredTools.find((t) => t.name === "memory_recall");
     const result = await recallTool.execute("call-1", { query: "widget decisions" });
 
-    // Should include both group results and owner fragment results
-    expect(result.details.count).toBe(3);
-    expect(result.details.ownerFragmentCount).toBe(2);
+    // Should include group results + only authorized owner fragments (post-filtered)
+    expect(result.details.count).toBe(2);
+    expect(result.details.ownerFragmentCount).toBe(1);
     expect(result.details.memories.some((m: { uuid: string }) => m.uuid === "owner-fragment-1")).toBe(true);
-    expect(result.details.memories.some((m: { uuid: string }) => m.uuid === "owner-fragment-2")).toBe(true);
+    // unauthorized-fragment should be filtered out by the post-filter
+    expect(result.details.memories.some((m: { uuid: string }) => m.uuid === "unauthorized-fragment")).toBe(false);
   });
 
   test("memory_recall skips owner lookup when subject is not an agent", async () => {

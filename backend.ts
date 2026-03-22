@@ -99,12 +99,26 @@ export interface MemoryBackend {
 
   /**
    * Search within a single group's storage partition.
-   * Called in parallel per-group by searchAuthorizedMemories() in search.ts.
+   * Fallback path when searchGroups() is not available.
    * Backends map their native result shape to SearchResult[].
    */
   searchGroup(params: {
     query: string;
     groupId: string;
+    limit: number;
+    sessionId?: string;
+  }): Promise<SearchResult[]>;
+
+  /**
+   * Search across multiple groups in a single backend call.
+   * Preferred over per-group fan-out because the backend can apply its own
+   * cross-group relevance ranking (e.g. Graphiti's RRF: cosine + BM25).
+   * Results are ordered by relevance; response position is used as implicit score.
+   * Optional: falls back to per-group searchGroup() fan-out if not implemented.
+   */
+  searchGroups?(params: {
+    query: string;
+    groupIds: string[];
     limit: number;
     sessionId?: string;
   }): Promise<SearchResult[]>;
@@ -161,13 +175,6 @@ export interface MemoryBackend {
    * Returns true if deleted, false if the backend doesn't support it.
    */
   deleteFragment?(uuid: string, type?: string): Promise<boolean>;
-
-  /**
-   * Fetch fragment details by their IDs.
-   * Used for fragment-level recall (e.g., finding memories via `involves` permissions).
-   * Optional: not all backends support fetching individual fragments by ID.
-   */
-  getFragmentsByIds?(ids: string[]): Promise<SearchResult[]>;
 
   /**
    * Discover fragment (fact/edge) UUIDs that were extracted from a stored episode.
