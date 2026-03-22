@@ -56,6 +56,29 @@ function isSessionGroup(groupId: string): boolean {
   return groupId.startsWith("session-");
 }
 
+function isSessionAllowed(
+  sessionKey: string | undefined,
+  filter: import("./config.js").RebacMemoryConfig["sessionFilter"],
+): boolean {
+  if (!filter) return true;
+  if (!sessionKey) return true;
+
+  if (filter.excludePatterns?.length) {
+    for (const pattern of filter.excludePatterns) {
+      if (sessionKey.includes(pattern)) return false;
+    }
+  }
+
+  if (filter.includePatterns?.length) {
+    for (const pattern of filter.includePatterns) {
+      if (sessionKey.includes(pattern)) return true;
+    }
+    return false;
+  }
+
+  return true;
+}
+
 // ============================================================================
 // Per-agent state
 // ============================================================================
@@ -581,6 +604,8 @@ const rebacMemoryPlugin = {
         const state = getState(ctx?.agentId);
         if (ctx?.sessionKey) state.sessionId = ctx.sessionKey;
 
+        if (!isSessionAllowed(ctx?.sessionKey, cfg.sessionFilter)) return;
+
         if (!event.prompt || event.prompt.length < 5) return;
 
         try {
@@ -637,6 +662,8 @@ const rebacMemoryPlugin = {
         const subject = resolveSubject(ctx?.agentId);
         const state = getState(ctx?.agentId);
         if (ctx?.sessionKey) state.sessionId = ctx.sessionKey;
+
+        if (!isSessionAllowed(ctx?.sessionKey, cfg.sessionFilter)) return;
 
         if (!event.success || !event.messages || event.messages.length === 0) return;
 

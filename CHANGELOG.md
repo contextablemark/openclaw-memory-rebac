@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.6] - 2026-03-22
+
+### Added
+
+- **Session filtering for auto-capture and auto-recall** ([#16](https://github.com/contextablemark/openclaw-memory-rebac/issues/16)): New `sessionFilter` config option with `excludePatterns` and `includePatterns` arrays. Sessions whose key matches an exclude pattern (or fails to match any include pattern) skip auto-capture and auto-recall entirely. Explicit memory tools (`memory_recall`, `memory_store`, etc.) remain available to all sessions — only the automatic hooks are filtered. This prevents cron/monitoring sessions from flooding the knowledge graph with repetitive, low-value facts.
+
+### Fixed
+
+- **Test mock isolation**: Added `vi.clearAllMocks()` to `beforeEach` in `index.test.ts` to prevent shared mock call history from leaking between tests.
+
 ## [0.3.5] - 2026-03-21
 
 ### Changed
