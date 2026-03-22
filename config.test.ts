@@ -122,6 +122,55 @@ describe("rebacMemoryConfigSchema", () => {
       "openclaw-memory-rebac config must be an object, not an array",
     );
   });
+
+  test("accepts sessionFilter with excludePatterns", () => {
+    const cfg = rebacMemoryConfigSchema.parse({
+      sessionFilter: { excludePatterns: ["cron", "monitoring"] },
+    });
+    expect(cfg.sessionFilter).toEqual({
+      excludePatterns: ["cron", "monitoring"],
+      includePatterns: undefined,
+    });
+  });
+
+  test("accepts sessionFilter with includePatterns", () => {
+    const cfg = rebacMemoryConfigSchema.parse({
+      sessionFilter: { includePatterns: ["interactive"] },
+    });
+    expect(cfg.sessionFilter).toEqual({
+      excludePatterns: undefined,
+      includePatterns: ["interactive"],
+    });
+  });
+
+  test("accepts sessionFilter with both patterns", () => {
+    const cfg = rebacMemoryConfigSchema.parse({
+      sessionFilter: {
+        excludePatterns: ["cron"],
+        includePatterns: ["main"],
+      },
+    });
+    expect(cfg.sessionFilter?.excludePatterns).toEqual(["cron"]);
+    expect(cfg.sessionFilter?.includePatterns).toEqual(["main"]);
+  });
+
+  test("rejects unknown sessionFilter keys", () => {
+    expect(() =>
+      rebacMemoryConfigSchema.parse({ sessionFilter: { badKey: [] } }),
+    ).toThrow("sessionFilter config has unknown keys: badKey");
+  });
+
+  test("normalizes empty sessionFilter arrays to undefined", () => {
+    const cfg = rebacMemoryConfigSchema.parse({
+      sessionFilter: { excludePatterns: [], includePatterns: [] },
+    });
+    expect(cfg.sessionFilter).toBeUndefined();
+  });
+
+  test("defaults sessionFilter to undefined when absent", () => {
+    const cfg = rebacMemoryConfigSchema.parse({});
+    expect(cfg.sessionFilter).toBeUndefined();
+  });
 });
 
 describe("createBackend", () => {

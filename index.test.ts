@@ -71,6 +71,7 @@ describe("openclaw-memory-rebac plugin", () => {
 
   beforeEach(async () => {
     vi.restoreAllMocks();
+    vi.clearAllMocks();
     mockFetch.mockReset();
     registeredTools = [];
     registeredClis = [];
@@ -272,6 +273,169 @@ describe("openclaw-memory-rebac plugin", () => {
 
     const hookCalls = mockApi.on.mock.calls.filter((c: unknown[]) => c[0] === "agent_end");
     expect(hookCalls).toHaveLength(0);
+  });
+
+  // ==========================================================================
+  // sessionFilter tests
+  // ==========================================================================
+
+  test("auto-recall hook skips when session key matches excludePatterns", async () => {
+    const plugin = await import("./index.js");
+    const filterApi = {
+      ...mockApi,
+      on: vi.fn(),
+      pluginConfig: {
+        ...mockApi.pluginConfig,
+        sessionFilter: { excludePatterns: ["cron"] },
+      },
+    };
+    plugin.default.register(filterApi);
+
+    const recallCalls = filterApi.on.mock.calls.filter((c: unknown[]) => c[0] === "before_agent_start");
+    expect(recallCalls).toHaveLength(1);
+
+    const handler = recallCalls[0][1];
+    const result = await handler(
+      { prompt: "What is the status of the server?" },
+      { agentId: "test", sessionKey: "agent:main:cron:abc123" },
+    );
+
+    expect(result).toBeUndefined();
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  test("auto-capture hook skips when session key matches excludePatterns", async () => {
+    const plugin = await import("./index.js");
+    const filterApi = {
+      ...mockApi,
+      on: vi.fn(),
+      pluginConfig: {
+        ...mockApi.pluginConfig,
+        sessionFilter: { excludePatterns: ["cron"] },
+      },
+    };
+    plugin.default.register(filterApi);
+
+    const captureCalls = filterApi.on.mock.calls.filter((c: unknown[]) => c[0] === "agent_end");
+    expect(captureCalls).toHaveLength(1);
+
+    const handler = captureCalls[0][1];
+    const result = await handler(
+      { success: true, messages: [{ role: "user", content: "Hello world test" }] },
+      { agentId: "test", sessionKey: "agent:main:cron:abc123" },
+    );
+
+    expect(result).toBeUndefined();
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  test("auto-recall hook proceeds when session key does NOT match excludePatterns", async () => {
+    const { v1 } = await import("@authzed/authzed-node");
+    const mockClient = v1.NewClient();
+
+    const plugin = await import("./index.js");
+    const filterApi = {
+      ...mockApi,
+      on: vi.fn(),
+      pluginConfig: {
+        ...mockApi.pluginConfig,
+        sessionFilter: { excludePatterns: ["cron"] },
+      },
+    };
+    plugin.default.register(filterApi);
+
+    const recallCalls = filterApi.on.mock.calls.filter((c: unknown[]) => c[0] === "before_agent_start");
+    const handler = recallCalls[0][1];
+
+    // Clear call history so we only see calls from the handler
+    mockClient.promises.lookupResources.mockClear();
+
+    await handler(
+      { prompt: "What is the status of the server?" },
+      { agentId: "test", sessionKey: "agent:main:interactive:xyz" },
+    );
+
+    // Should proceed past the filter — lookupResources proves SpiceDB was consulted
+    expect(mockClient.promises.lookupResources).toHaveBeenCalled();
+  });
+
+  test("auto-recall hook proceeds when sessionKey is undefined", async () => {
+    const { v1 } = await import("@authzed/authzed-node");
+    const mockClient = v1.NewClient();
+
+    const plugin = await import("./index.js");
+    const filterApi = {
+      ...mockApi,
+      on: vi.fn(),
+      pluginConfig: {
+        ...mockApi.pluginConfig,
+        sessionFilter: { excludePatterns: ["cron"] },
+      },
+    };
+    plugin.default.register(filterApi);
+
+    const recallCalls = filterApi.on.mock.calls.filter((c: unknown[]) => c[0] === "before_agent_start");
+    const handler = recallCalls[0][1];
+
+    // Clear call history so we only see calls from the handler
+    mockClient.promises.lookupResources.mockClear();
+
+    await handler(
+      { prompt: "What is the status of the server?" },
+      { agentId: "test" },
+    );
+
+    // Should proceed (undefined sessionKey allowed through) — lookupResources proves it
+    expect(mockClient.promises.lookupResources).toHaveBeenCalled();
+  });
+
+  test("includePatterns blocks non-matching sessions", async () => {
+    const plugin = await import("./index.js");
+    const filterApi = {
+      ...mockApi,
+      on: vi.fn(),
+      pluginConfig: {
+        ...mockApi.pluginConfig,
+        sessionFilter: { includePatterns: ["interactive"] },
+      },
+    };
+    plugin.default.register(filterApi);
+
+    const recallCalls = filterApi.on.mock.calls.filter((c: unknown[]) => c[0] === "before_agent_start");
+    const handler = recallCalls[0][1];
+
+    // Non-matching session should be blocked
+    const result = await handler(
+      { prompt: "What is the status of the server?" },
+      { agentId: "test", sessionKey: "agent:main:cron:abc123" },
+    );
+    expect(result).toBeUndefined();
+  });
+
+  test("excludePatterns takes priority over includePatterns", async () => {
+    const plugin = await import("./index.js");
+    const filterApi = {
+      ...mockApi,
+      on: vi.fn(),
+      pluginConfig: {
+        ...mockApi.pluginConfig,
+        sessionFilter: {
+          excludePatterns: ["cron"],
+          includePatterns: ["cron-special"],
+        },
+      },
+    };
+    plugin.default.register(filterApi);
+
+    const recallCalls = filterApi.on.mock.calls.filter((c: unknown[]) => c[0] === "before_agent_start");
+    const handler = recallCalls[0][1];
+
+    // "cron-special" matches include but also matches exclude — should be blocked
+    const result = await handler(
+      { prompt: "What is the status of the server?" },
+      { agentId: "test", sessionKey: "agent:cron-special:task" },
+    );
+    expect(result).toBeUndefined();
   });
 
   test("service.start() writes SpiceDB schema on first run", async () => {

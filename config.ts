@@ -29,6 +29,10 @@ export type RebacMemoryConfig = {
   autoCapture: boolean;
   autoRecall: boolean;
   maxCaptureMessages: number;
+  sessionFilter?: {
+    excludePatterns?: string[];
+    includePatterns?: string[];
+  };
 };
 
 // ============================================================================
@@ -50,6 +54,20 @@ function assertAllowedKeys(value: Record<string, unknown>, allowed: string[], la
   if (unknown.length > 0) {
     throw new Error(`${label} has unknown keys: ${unknown.join(", ")}`);
   }
+}
+
+function parseSessionFilter(raw: unknown): RebacMemoryConfig["sessionFilter"] {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const obj = raw as Record<string, unknown>;
+  assertAllowedKeys(obj, ["excludePatterns", "includePatterns"], "sessionFilter config");
+  const excludePatterns = Array.isArray(obj.excludePatterns)
+    ? obj.excludePatterns.filter((p): p is string => typeof p === "string")
+    : undefined;
+  const includePatterns = Array.isArray(obj.includePatterns)
+    ? obj.includePatterns.filter((p): p is string => typeof p === "string")
+    : undefined;
+  if (!excludePatterns?.length && !includePatterns?.length) return undefined;
+  return { excludePatterns, includePatterns };
 }
 
 // ============================================================================
@@ -75,7 +93,7 @@ export const rebacMemoryConfigSchema = {
       [
         "backend", "spicedb",
         "subjectType", "subjectId", "identities",
-        "autoCapture", "autoRecall", "maxCaptureMessages",
+        "autoCapture", "autoRecall", "maxCaptureMessages", "sessionFilter",
         backendName,
       ],
       "openclaw-memory-rebac config",
@@ -129,6 +147,7 @@ export const rebacMemoryConfigSchema = {
         typeof cfg.maxCaptureMessages === "number" && cfg.maxCaptureMessages > 0
           ? cfg.maxCaptureMessages
           : pluginDefaults.maxCaptureMessages,
+      sessionFilter: parseSessionFilter(cfg.sessionFilter),
     };
   },
 };

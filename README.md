@@ -163,6 +163,25 @@ When enabled (default: `true`), the plugin captures the last N messages from eac
 - Skips messages shorter than 5 characters and injected context blocks
 - Uses custom extraction instructions for entity/fact extraction
 
+### Session Filtering
+
+Both auto-recall and auto-capture can be filtered by session key pattern using the `sessionFilter` config option. This is useful for excluding cron jobs, monitoring sessions, or other automated processes that generate repetitive, low-value data.
+
+```json
+{
+  "sessionFilter": {
+    "excludePatterns": ["cron", "monitoring", "healthcheck"]
+  }
+}
+```
+
+- **`excludePatterns`**: Array of strings. If the session key contains any of these substrings, auto-recall and auto-capture are skipped for that session.
+- **`includePatterns`**: Array of strings. If set, only sessions whose key contains at least one of these substrings will trigger auto-recall/capture.
+- If both are set, `excludePatterns` takes priority (exclude first, then check include).
+- If neither is set, all sessions are captured (default behavior).
+
+Filtered sessions still have full access to explicit memory tools (`memory_recall`, `memory_store`, `memory_forget`, `memory_status`). This means a cron job that consolidates memories can still use `memory_recall` and `memory_store` directly — only the automatic hooks are suppressed.
+
 ## Authorization Model
 
 The SpiceDB schema defines four object types:
@@ -270,6 +289,8 @@ Agents without an `identities` entry (like service agents) are not linked to any
 | `identities` | object | `{}` | Maps agent IDs to owner person IDs for cross-agent recall (see [Identity Linking](#identity-linking)) |
 | `autoCapture` | boolean | `true` | Auto-capture conversations |
 | `autoRecall` | boolean | `true` | Auto-inject relevant memories |
+| `sessionFilter.excludePatterns` | string[] | `[]` | Skip auto-capture/recall for sessions matching any pattern |
+| `sessionFilter.includePatterns` | string[] | `[]` | Only auto-capture/recall sessions matching at least one pattern |
 | `customInstructions` | string | *(see below)* | Custom extraction instructions |
 | `maxCaptureMessages` | integer | `10` | Max messages per auto-capture batch (1-50) |
 
@@ -389,7 +410,10 @@ OpenClaw has an exclusive `memory` slot — only one memory plugin is active at 
             "my-agent": "U0123ABC"
           },
           "autoCapture": true,
-          "autoRecall": true
+          "autoRecall": true,
+          "sessionFilter": {
+            "excludePatterns": ["cron"]
+          }
         }
       }
     }
