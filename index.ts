@@ -80,6 +80,38 @@ function isSessionAllowed(
 }
 
 // ============================================================================
+// Content sanitization
+// ============================================================================
+
+/**
+ * Strip OpenClaw envelope metadata from message text before Graphiti ingestion.
+ * Removes channel headers, sender/message-id meta lines, and memory injection
+ * blocks that would pollute entity extraction.
+ */
+export function stripEnvelopeMetadata(text: string): string {
+  let result = text;
+
+  // Strip envelope header: [ChannelName ...metadata...] at start of line
+  // Matches: [Telegram Dev Chat +5m 2025-01-02T03:04Z] body
+  result = result.replace(/^\[[A-Z][^\]\n]*\]\s*/gm, "");
+
+  // Strip [from: SenderLabel] trailer lines
+  result = result.replace(/^\[from:\s*[^\]]*\]\s*$/gm, "");
+
+  // Strip [message_id: ...] hint lines
+  result = result.replace(/^\[message_id:\s*[^\]]*\]\s*$/gm, "");
+
+  // Strip memory injection blocks
+  result = result.replace(/<relevant-memories>[\s\S]*?<\/relevant-memories>/g, "");
+  result = result.replace(/<memory-tools>[\s\S]*?<\/memory-tools>/g, "");
+
+  // Collapse excess blank lines and trim
+  result = result.replace(/\n{3,}/g, "\n\n").trim();
+
+  return result;
+}
+
+// ============================================================================
 // Per-agent state
 // ============================================================================
 
@@ -700,9 +732,8 @@ const rebacMemoryPlugin = {
               text = textParts.join("\n");
             }
 
-            // Strip injected memory/tool blocks — keep the user's actual content
-            text = text.replace(/<relevant-memories>[\s\S]*?<\/relevant-memories>/g, "").trim();
-            text = text.replace(/<memory-tools>[\s\S]*?<\/memory-tools>/g, "").trim();
+            // Strip envelope metadata and injected blocks — keep the user's actual content
+            text = stripEnvelopeMetadata(text);
             if (!text || text.length < 5) continue;
 
             const roleLabel = role === "user" ? "User" : "Assistant";
@@ -800,7 +831,7 @@ const rebacMemoryPlugin = {
               return "";
             };
 
-            const userMsg = extractText(lastUserMsg);
+            const userMsg = stripEnvelopeMetadata(extractText(lastUserMsg));
             const assistantMsg = extractText(lastAssistMsg);
 
             if (userMsg && assistantMsg) {

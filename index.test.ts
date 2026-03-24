@@ -57,6 +57,81 @@ vi.mock("@authzed/authzed-node", () => {
 const mockFetch = vi.fn();
 global.fetch = mockFetch as unknown as typeof fetch;
 
+// ============================================================================
+// stripEnvelopeMetadata — pure function tests (no plugin setup needed)
+// ============================================================================
+
+describe("stripEnvelopeMetadata", () => {
+  let stripEnvelopeMetadata: (text: string) => string;
+
+  beforeEach(async () => {
+    const mod = await import("./index.js");
+    stripEnvelopeMetadata = mod.stripEnvelopeMetadata;
+  });
+
+  test("strips Telegram group envelope header", () => {
+    const input = "[Telegram Dev Chat +5m 2025-01-02T03:04Z] Alice (42): hello";
+    expect(stripEnvelopeMetadata(input)).toBe("Alice (42): hello");
+  });
+
+  test("strips WebChat envelope with host and ip", () => {
+    const input = "[WebChat user1 mac-mini 10.0.0.5 2025-01-02T03:04Z] hello";
+    expect(stripEnvelopeMetadata(input)).toBe("hello");
+  });
+
+  test("strips simple channel envelope", () => {
+    expect(stripEnvelopeMetadata("[Telegram] hi")).toBe("hi");
+  });
+
+  test("strips DM envelope", () => {
+    expect(stripEnvelopeMetadata("[IMessage +1555] hello")).toBe("hello");
+  });
+
+  test("strips [from: ...] trailer line", () => {
+    expect(stripEnvelopeMetadata("hello\n[from: Alice (42)]")).toBe("hello");
+  });
+
+  test("strips [message_id: ...] hint line", () => {
+    expect(stripEnvelopeMetadata("hello\n[message_id: 804]")).toBe("hello");
+  });
+
+  test("strips <relevant-memories> block", () => {
+    const input = "before <relevant-memories>stuff</relevant-memories> after";
+    expect(stripEnvelopeMetadata(input)).toBe("before  after");
+  });
+
+  test("strips <memory-tools> block", () => {
+    const input = "before <memory-tools>stuff</memory-tools> after";
+    expect(stripEnvelopeMetadata(input)).toBe("before  after");
+  });
+
+  test("preserves plain text without metadata", () => {
+    const input = "What's the weather today?";
+    expect(stripEnvelopeMetadata(input)).toBe(input);
+  });
+
+  test("preserves lowercase brackets", () => {
+    const input = "The config [requires] these settings";
+    expect(stripEnvelopeMetadata(input)).toBe(input);
+  });
+
+  test("returns empty string when input is all metadata", () => {
+    expect(stripEnvelopeMetadata("[Telegram] \n[from: Bot]")).toBe("");
+  });
+
+  test("strips multi-line mixed metadata", () => {
+    const input = [
+      "[Telegram Dev Chat +5m 2025-01-02T03:04Z] Alice (42): Can we deploy Friday?",
+      "Bob (99): Sounds good to me",
+      "[from: Alice (42)]",
+      "[message_id: 804]",
+    ].join("\n");
+    expect(stripEnvelopeMetadata(input)).toBe(
+      "Alice (42): Can we deploy Friday?\nBob (99): Sounds good to me",
+    );
+  });
+});
+
 describe("openclaw-memory-rebac plugin", () => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let registeredTools: any[];
