@@ -6,8 +6,8 @@
 #   1. Install sentence-transformers for BGE reranker
 #   2. Overlay per-component config + startup to wire separate clients
 #
-# UPGRADE AUDIT (vs upstream getzep/graphiti v0.28.2, audited 2026-03-21):
-#   Overlay patches in startup.py — 5 of 6 still needed:
+# UPGRADE AUDIT (vs upstream getzep/graphiti v0.28.2, audited 2026-03-24):
+#   Overlay patches in startup.py — 6 of 7 still needed:
 #   [NEEDED]  AsyncWorker crash-on-error recovery      (startup.py:109-126)
 #   [NEEDED]  Neo4j nested attribute sanitization       (startup.py:128-250)
 #   [SAFE]    None-index extract_edges fix              (startup.py:252-298)
@@ -15,6 +15,8 @@
 #   [NEEDED]  IS_DUPLICATE_OF edge filtering            (startup.py:152-169,216-227,310-318)
 #   [NEEDED]  Self-referential edge filtering           (startup.py:228-239)
 #   [NEEDED]  Singleton client / per-request fix        (startup.py:38-87)
+#   [NEEDED]  resolve_extracted_edge IndexError guard   (startup.py:325-349)
+#             — fixed upstream v0.28.2+; no Docker image published beyond 0.22.0
 ###############################################################################
 
 FROM zepai/graphiti:0.22.0
