@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Strip envelope metadata before Graphiti ingestion** ([#23](https://github.com/contextablemark/openclaw-memory-rebac/issues/23)): Auto-capture now strips OpenClaw envelope metadata from user messages before sending them to Graphiti for entity extraction. Previously, channel headers (`[Telegram Dev Chat +5m ...]`), sender meta lines (`[from: Alice (42)]`), and message ID hints (`[message_id: 804]`) were ingested verbatim, causing Graphiti to extract redundant noise facts like "Mark's Telegram Chat ID is 85555555" on every turn. The new `stripEnvelopeMetadata()` function removes these metadata patterns — along with the already-handled `<relevant-memories>` and `<memory-tools>` blocks — in a single pass. Also applied to the `enrichSession` code path.
+
 ## [0.3.7] - 2026-03-22
 
 ### Fixed
