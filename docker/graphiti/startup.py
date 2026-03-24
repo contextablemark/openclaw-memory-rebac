@@ -322,6 +322,31 @@ def patch():
     # Patch the local binding in graphiti.py
     graphiti_mod.extract_edges = safe_extract_edges
 
+    # -- Guard resolve_extracted_edge against IndexError from out-of-bounds
+    # contradicted_facts indices (issue #22) --
+    # The LLM sometimes returns fact indices that exceed the existing_edges list
+    # length, crashing the list comprehension. Upstream v0.28.2+ adds bounds
+    # checking; this patch provides equivalent safety for pinned v0.22.0.
+    original_resolve_extracted_edge = edge_ops_mod.resolve_extracted_edge
+
+    async def safe_resolve_extracted_edge(*args, **kwargs):
+        try:
+            return await original_resolve_extracted_edge(*args, **kwargs)
+        except IndexError as e:
+            logger.warning(
+                "resolve_extracted_edge: IndexError caught (out-of-bounds "
+                "contradicted_facts index): %s — returning edge as-is with "
+                "no invalidations",
+                e,
+            )
+            # args[1] is extracted_edge per the function signature
+            extracted_edge = args[1] if len(args) > 1 else kwargs.get("extracted_edge")
+            if extracted_edge is None:
+                raise
+            return (extracted_edge, [], [])
+
+    edge_ops_mod.resolve_extracted_edge = safe_resolve_extracted_edge
+
     return app
 
 
