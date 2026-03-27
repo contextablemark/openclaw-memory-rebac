@@ -1,6 +1,6 @@
 {
   "name": "@contextableai/openclaw-memory-rebac",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "OpenClaw two-layer memory plugin: SpiceDB ReBAC authorization + pluggable storage (Graphiti, EverMemOS)",
   "type": "module",
   "license": "MIT",
@@ -25,6 +25,8 @@
     "schema.zed",
     "docker/**/*.yml",
     "docker/**/*.py",
+    "docker/**/*.sh",
+    "docker/**/*.conf",
     "docker/**/*.example",
     "docker/**/Dockerfile",
     "scripts/",
