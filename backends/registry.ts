@@ -9,6 +9,7 @@
 
 import type { MemoryBackend } from "../backend.js";
 import * as graphiti from "./graphiti.js";
+import * as evermemos from "./evermemos.js";
 
 export type BackendModule = {
   create: (config: Record<string, unknown>) => MemoryBackend;
@@ -17,4 +18,5 @@ export type BackendModule = {
 
 export const backendRegistry: Readonly<Record<string, BackendModule>> = {
   graphiti,
+  evermemos,
 };

@@ -35,6 +35,10 @@ import {
   canDeleteFragment,
   canWriteToGroup,
   ensureGroupMembership,
+  ensureGroupOwnership,
+  canShareFragment,
+  shareFragment,
+  unshareFragment,
   type Subject,
 } from "./authorization.js";
 import {
@@ -288,6 +292,42 @@ const rebacMemoryPlugin = {
                       // Post-filter: only keep results the owner is authorized to view
                       const viewableSet = new Set(newIds);
                       ownerFragmentResults = candidateResults.filter(r => viewableSet.has(r.uuid));
+
+                      // Lazy resolution: if post-filter found nothing but we had viewable
+                      // fragment IDs and candidate results, the IDs may be unresolved
+                      // anchors (e.g. messageId UUIDs from a timed-out discoverFragmentIds).
+                      // Try resolving them to actual searchable IDs via the backend.
+                      if (ownerFragmentResults.length === 0 && candidateResults.length > 0 && backend.resolveAnchors) {
+                        const resolved = await backend.resolveAnchors(newIds);
+                        if (resolved.size > 0) {
+                          const resolvedSet = new Set([...resolved.values()].flat());
+                          ownerFragmentResults = candidateResults.filter(r => resolvedSet.has(r.uuid));
+
+                          // Background: update SpiceDB so future recalls are fast
+                          if (ownerFragmentResults.length > 0) {
+                            void (async () => {
+                              try {
+                                for (const [, objectIds] of resolved) {
+                                  for (const objId of objectIds) {
+                                    const wt = await writeFragmentRelationships(spicedb, {
+                                      fragmentId: objId,
+                                      groupId: newGroups[0],
+                                      sharedBy: ownerSubject,
+                                      involves: [ownerSubject],
+                                    });
+                                    if (wt) state.lastWriteToken = wt;
+                                  }
+                                }
+                                api.logger.info(
+                                  `openclaw-memory-rebac: lazy-resolved ${resolved.size} anchor(s) to ${ownerFragmentResults.length} fragment(s)`,
+                                );
+                              } catch (lazyErr) {
+                                api.logger.warn(`openclaw-memory-rebac: lazy SpiceDB update failed: ${String(lazyErr)}`);
+                              }
+                            })();
+                          }
+                        }
+                      }
                     }
                   }
                 }
@@ -427,6 +467,11 @@ const rebacMemoryPlugin = {
           // has a stable episode UUID.  Discover extracted fact UUIDs and write
           // per-fact relationships so that fragment-level permissions (view, delete)
           // resolve correctly against the IDs returned by memory_recall.
+          //
+          // Graphiti: polls /episodes/{id}/edges for fact UUIDs.
+          // EverMemOS: polls trace overlay for MongoDB ObjectIds of derived memories.
+          // If discovery times out, fallback writes the episode UUID itself — lazy
+          // resolution at recall time (resolveAnchors) handles the recovery.
           result.fragmentId
             .then(async (episodeId) => {
               const factIds = backend.discoverFragmentIds
@@ -559,6 +604,116 @@ const rebacMemoryPlugin = {
         },
       }),
       { name: "memory_forget" },
+    );
+
+    api.registerTool(
+      (ctx) => ({
+        name: "memory_share",
+        label: "Memory Share",
+        description:
+          "Share a specific memory with one or more people/agents, granting them view access. " +
+          "Use type-prefixed IDs from memory_recall (e.g. 'fact:UUID', 'chunk:UUID'). " +
+          "Only the memory's creator or a group admin can share.",
+        parameters: Type.Object({
+          id: Type.String({ description: "Memory ID to share (e.g. 'fact:da8650cb-...' or bare UUID)" }),
+          share_with: Type.Array(Type.String(), { description: "Person or agent IDs to grant view access" }),
+        }),
+        async execute(_toolCallId, params) {
+          const { id, share_with } = params as { id: string; share_with: string[] };
+
+          if (share_with.length === 0) {
+            return {
+              content: [{ type: "text", text: "No targets specified." }],
+              details: { action: "error", id },
+            };
+          }
+
+          const subject = resolveSubject(ctx.agentId);
+          const state = getState(ctx.agentId);
+
+          // Parse type prefix to get bare UUID
+          const colonIdx = id.indexOf(":");
+          const uuid = colonIdx > 0 && colonIdx < 10 ? id.slice(colonIdx + 1) : id;
+
+          // Check share permission
+          const allowed = await canShareFragment(spicedb, subject, uuid, state.lastWriteToken);
+          if (!allowed) {
+            return {
+              content: [{ type: "text", text: `Permission denied: cannot share fragment "${uuid}". Only the creator or a group admin can share.` }],
+              details: { action: "denied", id },
+            };
+          }
+
+          // Write involves relationships for each target
+          const targets: Subject[] = share_with.map((targetId) => ({
+            type: "person" as const,
+            id: targetId,
+          }));
+
+          const writeToken = await shareFragment(spicedb, uuid, targets);
+          if (writeToken) state.lastWriteToken = writeToken;
+
+          return {
+            content: [{ type: "text", text: `Shared memory "${uuid}" with: ${share_with.join(", ")}` }],
+            details: { action: "shared", id, uuid, targets: share_with },
+          };
+        },
+      }),
+      { name: "memory_share" },
+    );
+
+    api.registerTool(
+      (ctx) => ({
+        name: "memory_unshare",
+        label: "Memory Unshare",
+        description:
+          "Revoke view access to a specific memory for one or more people/agents. " +
+          "Removes the 'involves' relationship. Only the memory's creator or a group admin can unshare.",
+        parameters: Type.Object({
+          id: Type.String({ description: "Memory ID to unshare (e.g. 'fact:da8650cb-...' or bare UUID)" }),
+          revoke_from: Type.Array(Type.String(), { description: "Person or agent IDs to revoke view access from" }),
+        }),
+        async execute(_toolCallId, params) {
+          const { id, revoke_from } = params as { id: string; revoke_from: string[] };
+
+          if (revoke_from.length === 0) {
+            return {
+              content: [{ type: "text", text: "No targets specified." }],
+              details: { action: "error", id },
+            };
+          }
+
+          const subject = resolveSubject(ctx.agentId);
+          const state = getState(ctx.agentId);
+
+          // Parse type prefix to get bare UUID
+          const colonIdx = id.indexOf(":");
+          const uuid = colonIdx > 0 && colonIdx < 10 ? id.slice(colonIdx + 1) : id;
+
+          // Check share permission (same permission governs unshare)
+          const allowed = await canShareFragment(spicedb, subject, uuid, state.lastWriteToken);
+          if (!allowed) {
+            return {
+              content: [{ type: "text", text: `Permission denied: cannot unshare fragment "${uuid}".` }],
+              details: { action: "denied", id },
+            };
+          }
+
+          // Remove involves relationships for each target
+          const targets: Subject[] = revoke_from.map((targetId) => ({
+            type: "person" as const,
+            id: targetId,
+          }));
+
+          await unshareFragment(spicedb, uuid, targets);
+
+          return {
+            content: [{ type: "text", text: `Revoked access to "${uuid}" from: ${revoke_from.join(", ")}` }],
+            details: { action: "unshared", id, uuid, targets: revoke_from },
+          };
+        },
+      }),
+      { name: "memory_unshare" },
     );
 
     api.registerTool(
@@ -909,6 +1064,20 @@ const rebacMemoryPlugin = {
               api.logger.info(`openclaw-memory-rebac: linked agent:${agentId} ↔ person:${personId}`);
             } catch (err) {
               api.logger.warn(`openclaw-memory-rebac: failed to write owner for agent:${agentId}: ${err}`);
+            }
+          }
+
+          // Write group → owner relationships from groupOwners config
+          for (const [groupId, ownerIds] of Object.entries(cfg.groupOwners)) {
+            for (const ownerId of ownerIds) {
+              try {
+                const ownerSubject: Subject = { type: "person", id: ownerId };
+                const token = await ensureGroupOwnership(spicedb, groupId, ownerSubject);
+                if (token) defaultState.lastWriteToken = token;
+                api.logger.info(`openclaw-memory-rebac: set person:${ownerId} as owner of group:${groupId}`);
+              } catch (err) {
+                api.logger.warn(`openclaw-memory-rebac: failed to write owner for group:${groupId}: ${err}`);
+              }
             }
           }
         }

@@ -1,7 +1,7 @@
 {
   "name": "@contextableai/openclaw-memory-rebac",
-  "version": "0.3.8",
-  "description": "OpenClaw two-layer memory plugin: SpiceDB ReBAC authorization + Graphiti knowledge graph",
+  "version": "0.4.0",
+  "description": "OpenClaw two-layer memory plugin: SpiceDB ReBAC authorization + pluggable storage (Graphiti, EverMemOS)",
   "type": "module",
   "license": "MIT",
   "repository": {
@@ -34,13 +34,15 @@
     "openclaw": "*"
   },
   "scripts": {
-    "build": "rm -rf dist && tsc -p tsconfig.build.json && cp plugin.defaults.json dist/ && mkdir -p dist/backends && cp backends/graphiti.defaults.json dist/backends/",
+    "build": "rm -rf dist && tsc -p tsconfig.build.json && cp plugin.defaults.json dist/ && mkdir -p dist/backends && cp backends/graphiti.defaults.json backends/evermemos.defaults.json dist/backends/",
     "prepublishOnly": "npm run build",
     "cli": "tsx bin/rebac-mem.ts",
     "typecheck": "tsc 2>&1 | grep -v '../openclaw/' | grep -c 'error TS' | xargs -I{} test {} -eq 0",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:e2e": "OPENCLAW_LIVE_TEST=1 vitest run --config vitest.e2e.config.ts"
+    "test:e2e": "OPENCLAW_LIVE_TEST=1 vitest run --config vitest.e2e.config.ts",
+    "test:e2e:backend": "OPENCLAW_LIVE_TEST=1 vitest run --config vitest.e2e.config.ts e2e-backend.test.ts",
+    "test:e2e:evermemos": "OPENCLAW_LIVE_TEST=1 E2E_BACKEND=evermemos vitest run --config vitest.e2e.config.ts e2e-evermemos.test.ts"
   },
   "dependencies": {
     "@authzed/authzed-node": "1.6.1",

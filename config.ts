@@ -26,6 +26,8 @@ export type RebacMemoryConfig = {
   subjectId: string;
   /** Maps agent IDs to their owner person IDs (e.g., Slack user IDs). */
   identities: Record<string, string>;
+  /** Maps group IDs to their owner person IDs (for admin-level sharing). */
+  groupOwners: Record<string, string[]>;
   autoCapture: boolean;
   autoRecall: boolean;
   maxCaptureMessages: number;
@@ -92,7 +94,7 @@ export const rebacMemoryConfigSchema = {
       cfg,
       [
         "backend", "spicedb",
-        "subjectType", "subjectId", "identities",
+        "subjectType", "subjectId", "identities", "groupOwners",
         "autoCapture", "autoRecall", "maxCaptureMessages", "sessionFilter",
         backendName,
       ],
@@ -124,6 +126,19 @@ export const rebacMemoryConfigSchema = {
       }
     }
 
+    // Parse groupOwners: { "slack-engineering": ["U0123", "U0456"] }
+    const groupOwnersRaw = cfg.groupOwners;
+    const groupOwners: Record<string, string[]> = {};
+    if (groupOwnersRaw && typeof groupOwnersRaw === "object" && !Array.isArray(groupOwnersRaw)) {
+      for (const [groupId, owners] of Object.entries(groupOwnersRaw as Record<string, unknown>)) {
+        if (Array.isArray(owners)) {
+          groupOwners[groupId] = owners.filter((o): o is string => typeof o === "string" && o.trim() !== "");
+        } else if (typeof owners === "string" && owners.trim()) {
+          groupOwners[groupId] = [owners.trim()];
+        }
+      }
+    }
+
     return {
       backend: backendName,
       spicedb: {
@@ -141,6 +156,7 @@ export const rebacMemoryConfigSchema = {
       subjectType,
       subjectId,
       identities,
+      groupOwners,
       autoCapture: cfg.autoCapture !== false,
       autoRecall: cfg.autoRecall !== false,
       maxCaptureMessages:

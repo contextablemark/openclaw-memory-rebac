@@ -203,15 +203,17 @@ describe("openclaw-memory-rebac plugin", () => {
     expect(plugin.default.kind).toBe("memory");
   });
 
-  test("registers 4 tools: memory_recall, memory_store, memory_forget, memory_status", async () => {
+  test("registers 6 tools: memory_recall, memory_store, memory_forget, memory_share, memory_unshare, memory_status", async () => {
     const plugin = await import("./index.js");
     await plugin.default.register(mockApi);
 
-    expect(registeredTools).toHaveLength(4);
+    expect(registeredTools).toHaveLength(6);
     expect(registeredTools.map((t) => t.name)).toEqual([
       "memory_recall",
       "memory_store",
       "memory_forget",
+      "memory_share",
+      "memory_unshare",
       "memory_status",
     ]);
   });
@@ -698,6 +700,138 @@ describe("openclaw-memory-rebac plugin", () => {
 
     expect(result.content[0].text).toContain("Entities cannot be deleted directly");
     expect(result.details.action).toBe("error");
+  });
+
+  // ==========================================================================
+  // memory_share / memory_unshare tests
+  // ==========================================================================
+
+  test("memory_share writes involves relationships and returns success", async () => {
+    const { v1 } = await import("@authzed/authzed-node");
+    const mockClient = v1.NewClient();
+
+    // Default mock already returns HAS_PERMISSION for checkPermission
+    mockClient.promises.checkPermission = vi.fn().mockResolvedValue({ permissionship: 2 });
+
+    const plugin = await import("./index.js");
+    await plugin.default.register(mockApi);
+
+    const shareTool = registeredTools.find((t) => t.name === "memory_share");
+    expect(shareTool).toBeDefined();
+
+    const result = await shareTool.execute("call-share-1", {
+      id: "fact:test-fragment-uuid",
+      share_with: ["alice", "bob"],
+    });
+
+    expect(result.details.action).toBe("shared");
+    expect(result.details.uuid).toBe("test-fragment-uuid");
+    expect(result.details.targets).toEqual(["alice", "bob"]);
+    expect(result.content[0].text).toContain("Shared memory");
+    expect(result.content[0].text).toContain("alice");
+    expect(result.content[0].text).toContain("bob");
+  });
+
+  test("memory_share denies when share permission check fails", async () => {
+    const { v1 } = await import("@authzed/authzed-node");
+    const mockClient = v1.NewClient();
+
+    mockClient.promises.checkPermission = vi.fn().mockResolvedValue({ permissionship: 1 });
+
+    const plugin = await import("./index.js");
+    await plugin.default.register(mockApi);
+
+    const shareTool = registeredTools.find((t) => t.name === "memory_share");
+    expect(shareTool).toBeDefined();
+
+    const result = await shareTool.execute("call-share-2", {
+      id: "fact:forbidden-uuid",
+      share_with: ["alice"],
+    });
+
+    expect(result.details.action).toBe("denied");
+    expect(result.content[0].text).toContain("Permission denied");
+  });
+
+  test("memory_share returns error for empty share_with", async () => {
+    const plugin = await import("./index.js");
+    await plugin.default.register(mockApi);
+
+    const shareTool = registeredTools.find((t) => t.name === "memory_share");
+    expect(shareTool).toBeDefined();
+
+    const result = await shareTool.execute("call-share-3", {
+      id: "fact:some-uuid",
+      share_with: [],
+    });
+
+    expect(result.details.action).toBe("error");
+    expect(result.content[0].text).toContain("No targets specified");
+  });
+
+  test("memory_unshare removes involves relationships", async () => {
+    const { v1 } = await import("@authzed/authzed-node");
+    const mockClient = v1.NewClient();
+
+    mockClient.promises.checkPermission = vi.fn().mockResolvedValue({ permissionship: 2 });
+
+    const plugin = await import("./index.js");
+    await plugin.default.register(mockApi);
+
+    const unshareTool = registeredTools.find((t) => t.name === "memory_unshare");
+    expect(unshareTool).toBeDefined();
+
+    const result = await unshareTool.execute("call-unshare-1", {
+      id: "chunk:test-fragment-uuid",
+      revoke_from: ["alice"],
+    });
+
+    expect(result.details.action).toBe("unshared");
+    expect(result.details.uuid).toBe("test-fragment-uuid");
+    expect(result.details.targets).toEqual(["alice"]);
+    expect(result.content[0].text).toContain("Revoked access");
+  });
+
+  test("memory_unshare denies when share permission check fails", async () => {
+    const { v1 } = await import("@authzed/authzed-node");
+    const mockClient = v1.NewClient();
+
+    mockClient.promises.checkPermission = vi.fn().mockResolvedValue({ permissionship: 1 });
+
+    const plugin = await import("./index.js");
+    await plugin.default.register(mockApi);
+
+    const unshareTool = registeredTools.find((t) => t.name === "memory_unshare");
+    expect(unshareTool).toBeDefined();
+
+    const result = await unshareTool.execute("call-unshare-2", {
+      id: "fact:forbidden-uuid",
+      revoke_from: ["alice"],
+    });
+
+    expect(result.details.action).toBe("denied");
+    expect(result.content[0].text).toContain("Permission denied");
+  });
+
+  test("memory_share strips type prefix correctly", async () => {
+    const { v1 } = await import("@authzed/authzed-node");
+    const mockClient = v1.NewClient();
+
+    mockClient.promises.checkPermission = vi.fn().mockResolvedValue({ permissionship: 2 });
+
+    const plugin = await import("./index.js");
+    await plugin.default.register(mockApi);
+
+    const shareTool = registeredTools.find((t) => t.name === "memory_share");
+    expect(shareTool).toBeDefined();
+
+    const result = await shareTool.execute("call-share-4", {
+      id: "abcdef12-3456-7890-abcd-ef1234567890",
+      share_with: ["alice"],
+    });
+
+    expect(result.details.uuid).toBe("abcdef12-3456-7890-abcd-ef1234567890");
+    expect(result.details.action).toBe("shared");
   });
 
   // ==========================================================================

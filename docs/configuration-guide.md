@@ -1,16 +1,18 @@
 # Configuration Guide
 
-This guide walks through setting up openclaw-memory-rebac with the Graphiti backend, from infrastructure to production-ready configuration.
+This guide walks through setting up openclaw-memory-rebac with either the Graphiti or EverMemOS backend, from infrastructure to production-ready configuration.
 
 ## Quick Start
+
+### Graphiti Backend
 
 ```bash
 # 1. Start full infrastructure (Graphiti + SpiceDB)
 cd docker
-docker compose up -d
+docker compose -f docker-compose.graphiti.yml up -d
 
 # 2. Verify services are healthy
-docker compose ps
+docker compose -f docker-compose.graphiti.yml ps
 
 # 3. Write the SpiceDB authorization schema
 npm run cli -- schema-write
@@ -19,13 +21,35 @@ npm run cli -- schema-write
 npm run cli -- status
 ```
 
+### EverMemOS Backend
+
+```bash
+# 1. Configure API keys (LLM, vectorize, rerank)
+cd docker/evermemos
+cp .env.example .env
+# Edit .env — set LLM_API_KEY, VECTORIZE_API_KEY, RERANK_API_KEY
+
+# 2. Start full infrastructure (EverMemOS + SpiceDB)
+cd docker
+docker compose -f docker-compose.evermemos.yml up -d   # builds image on first run (~5 min)
+
+# 3. Verify services are healthy (allow ~60s for internal services to start)
+docker compose -f docker-compose.evermemos.yml ps
+
+# 4. Write the SpiceDB authorization schema
+npm run cli -- schema-write
+
+# 5. Check connectivity
+REBAC_MEM_BACKEND=evermemos npm run cli -- status
+```
+
 Then add the plugin to your OpenClaw config (`~/.openclaw/openclaw.json`) and restart the gateway.
 
 ## Infrastructure
 
 ### Docker Compose (Recommended)
 
-The `docker/docker-compose.yml` orchestrates the full stack via two sub-stacks:
+The `docker/docker-compose.graphiti.yml` orchestrates the Graphiti stack via two sub-stacks:
 
 **Graphiti stack** (`docker/graphiti/`):
 
@@ -44,9 +68,9 @@ The `docker/docker-compose.yml` orchestrates the full stack via two sub-stacks:
 | **SpiceDB** | 8080 | Health/metrics endpoint |
 
 ```bash
-# Start everything
+# Start everything (Graphiti + SpiceDB)
 cd docker
-docker compose up -d
+docker compose -f docker-compose.graphiti.yml up -d
 
 # Or start stacks independently
 cd docker/graphiti && docker compose up -d
@@ -55,7 +79,66 @@ cd docker/spicedb && docker compose up -d
 
 SpiceDB migrations run automatically via the `spicedb-migrate` service.
 
-### Environment Variables (Docker)
+### EverMemOS Stack
+
+The `docker/docker-compose.evermemos.yml` orchestrates the EverMemOS stack via two sub-stacks:
+
+**EverMemOS all-in-one** (`docker/evermemos/`):
+
+A single container bundles all EverMemOS backing services, managed by supervisord:
+
+| Component | Port | Purpose |
+|-----------|------|---------|
+| **MongoDB 7.0** | 27017 (internal) | Document storage |
+| **Elasticsearch 8** | 9200 (internal) | Keyword search |
+| **Milvus** | 19530 (internal) | Vector search (embedded etcd) |
+| **Redis 7** | 6379 (internal) | Caching |
+| **EverMemOS API** | 1995 (exposed) | FastAPI REST server |
+
+**SpiceDB stack** (`docker/spicedb/`) — same as Graphiti, shared.
+
+```bash
+# Start everything (EverMemOS + SpiceDB)
+cd docker
+docker compose -f docker-compose.evermemos.yml up -d
+
+# Or start stacks independently
+cd docker/evermemos && docker compose up -d
+cd docker/spicedb && docker compose up -d
+```
+
+The EverMemOS image is built from source on first run (pinned to release tag `v1.1.0`), which takes ~5 minutes. Subsequent starts use the cached image.
+
+Resource requirements: ~4 GB RAM (Elasticsearch + Milvus are memory-intensive).
+
+### Environment Variables — EverMemOS
+
+Create a `.env` file in `docker/evermemos/` to configure the EverMemOS container:
+
+```bash
+# LLM for memory extraction (MemCell pipeline)
+LLM_PROVIDER=groq
+LLM_MODEL=openai/gpt-oss-120b
+LLM_BASE_URL=https://api.groq.com/openai/v1
+LLM_API_KEY=your-key-here
+
+# Vectorize (embedding) for semantic search
+VECTORIZE_PROVIDER=deepinfra
+VECTORIZE_API_KEY=your-key-here
+VECTORIZE_BASE_URL=https://api.deepinfra.com/v1/openai
+VECTORIZE_MODEL=Qwen/Qwen3-Embedding-4B
+VECTORIZE_DIMENSIONS=1024
+
+# Rerank for search result reranking
+RERANK_PROVIDER=deepinfra
+RERANK_API_KEY=your-key-here
+RERANK_BASE_URL=https://api.deepinfra.com/v1/inference
+RERANK_MODEL=Qwen/Qwen3-Reranker-4B
+```
+
+Database connection settings (MongoDB, Elasticsearch, Milvus, Redis) are pre-configured in `docker-compose.yml` — no changes needed.
+
+### Environment Variables — Graphiti (Docker)
 
 Create a `.env` file in `docker/graphiti/` to configure the Graphiti stack:
 
@@ -146,13 +229,45 @@ Add the plugin to your OpenClaw configuration:
 }
 ```
 
+For EverMemOS, use `"backend": "evermemos"` and add an `evermemos` block:
+
+```json
+{
+  "plugins": {
+    "entries": {
+      "openclaw-memory-rebac": {
+        "enabled": true,
+        "config": {
+          "backend": "evermemos",
+          "spicedb": {
+            "endpoint": "localhost:50051",
+            "token": "dev_token",
+            "insecure": true
+          },
+          "evermemos": {
+            "endpoint": "http://localhost:1995",
+            "defaultGroupId": "main",
+            "retrieveMethod": "hybrid",
+            "memoryTypes": ["episodic_memory", "profile", "foresight", "event_log"]
+          },
+          "subjectType": "agent",
+          "subjectId": "my-agent",
+          "autoCapture": true,
+          "autoRecall": true
+        }
+      }
+    }
+  }
+}
+```
+
 ### Config Reference
 
 #### Top-Level
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `backend` | `"graphiti"` | `"graphiti"` | Storage backend |
+| `backend` | `"graphiti"` \| `"evermemos"` | `"graphiti"` | Storage backend |
 | `subjectType` | `"agent"` \| `"person"` | `"agent"` | SpiceDB subject type for the current user |
 | `subjectId` | string | `"default"` | Fallback SpiceDB subject ID when agentId is unavailable (supports `${ENV_VAR}`) |
 | `identities` | `Record<string, string>` | `{}` | Maps agent IDs to owner person IDs for cross-agent recall |
@@ -178,6 +293,17 @@ Add the plugin to your OpenClaw configuration:
 | `uuidPollIntervalMs` | integer | `3000` | How often to poll for episode UUID (ms) |
 | `uuidPollMaxAttempts` | integer | `60` | Max polls before giving up (timeout = interval x attempts) |
 | `requestTimeoutMs` | integer | `30000` | HTTP request timeout for REST calls (ms) |
+
+#### EverMemOS (`evermemos.*`)
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `endpoint` | string | `"http://localhost:1995"` | EverMemOS REST server URL |
+| `defaultGroupId` | string | `"main"` | Default group for memory storage |
+| `requestTimeoutMs` | integer | `30000` | HTTP request timeout for REST calls (ms) |
+| `retrieveMethod` | `"hybrid"` \| `"keyword"` \| `"semantic"` | `"hybrid"` | Search method |
+| `memoryTypes` | string[] | `["episodic_memory", "profile", "foresight", "event_log"]` | Memory types to search |
+| `defaultSenderId` | string | `"system"` | Default sender ID for stored memories |
 
 ### Default Extraction Instructions
 
@@ -460,6 +586,7 @@ Example `rebac-mem.config.json`:
 | `REBAC_MEM_SUBJECT_TYPE` | `subjectType` | `agent` |
 | `REBAC_MEM_SUBJECT_ID` | `subjectId` | `default` |
 | `REBAC_MEM_BACKEND` | `backend` | `graphiti` |
+| `EVERMEMOS_ENDPOINT` | `evermemos.endpoint` | `http://localhost:1995` |
 
 ## Troubleshooting
 
@@ -479,7 +606,7 @@ Or via environment variable: `SPICEDB_TOKEN=dev_token`
 
 ### SpiceDB connection refused
 
-1. Verify SpiceDB is running: `docker compose ps` should show `spicedb` as healthy
+1. Verify SpiceDB is running: `docker compose -f docker-compose.graphiti.yml ps` should show `spicedb` as healthy
 2. Check the endpoint matches: default is `localhost:50051`
 3. If SpiceDB is inside Docker and the plugin is outside, use `localhost:50051`
 4. If both are inside Docker, use `spicedb:50051`
@@ -488,7 +615,7 @@ Or via environment variable: `SPICEDB_TOKEN=dev_token`
 
 1. Verify Graphiti is running: `curl http://localhost:8000/health`
 2. Check Neo4j is healthy — Graphiti won't start without it
-3. Check Graphiti logs: `docker compose logs graphiti`
+3. Check Graphiti logs: `cd docker/graphiti && docker compose logs graphiti`
 
 ### Slow episode processing (15+ minutes)
 
@@ -512,7 +639,7 @@ If you see `GqlError` mentioning `MAP` or `LIST` types:
 
 1. This means the attribute sanitization patch isn't running — likely a Docker image issue
 2. Rebuild the custom image: `cd docker/graphiti && docker compose build --no-cache`
-3. Restart with: `docker compose up -d --force-recreate`
+3. Restart with: `cd docker/graphiti && docker compose up -d --force-recreate`
 
 The custom startup.py flattens nested LLM-extracted attributes to JSON strings before they reach Neo4j. This is necessary because local LLMs (unlike OpenAI) sometimes return nested objects in entity/edge attributes.
 
@@ -522,3 +649,23 @@ The custom startup.py flattens nested LLM-extracted attributes to JSON strings b
 2. Check that memories exist: `rebac-mem search "test" --limit 5`
 3. Ensure the SpiceDB schema is written: `rebac-mem schema-write`
 4. Check that `autoRecall` is `true` in the plugin config
+
+### EverMemOS container unhealthy
+
+The all-in-one container runs 5 services via supervisord. Check logs for the failing service:
+
+```bash
+docker logs <evermemos-container>
+```
+
+Common issues:
+
+- **Milvus "context deadline exceeded"**: Milvus needs embedded etcd enabled. Verify the supervisord config sets `ETCD_USE_EMBED=true`.
+- **EverMemOS ".env文件不存在"**: The EverMemOS app needs a `.env` file at `/app/.env`. The entrypoint script generates this from Docker environment variables. Verify the `.env` file in `docker/evermemos/` exists and has the required API keys.
+- **Elasticsearch "Duplicate field"**: ES 8.x default config may conflict with appended settings. The Dockerfile uses `sed` to replace defaults rather than appending.
+
+### EverMemOS API returns 400/500
+
+1. Check that all backing services are running: `docker exec <container> ps aux` — should show mongod, elasticsearch, milvus, redis, and python
+2. Verify API keys are valid: LLM, vectorize, and rerank endpoints must be reachable
+3. Check EverMemOS logs for Python tracebacks in the container output

@@ -1,0 +1,52 @@
+###############################################################################
+# openclaw-memory-rebac — EverMemOS memory backend (all-in-one container)
+#
+# Single container bundles: MongoDB, Elasticsearch, Milvus, Redis, EverMemOS.
+# Managed by supervisord internally.
+#
+# Usage:
+#   cp .env.example .env          # configure LLM, vectorize, rerank API keys
+#   docker compose up -d          # builds image on first run (~5 min)
+#
+# EverMemOS endpoint:  http://localhost:1995
+#
+# Resource requirements: ~4 GB RAM (Elasticsearch + Milvus are memory-heavy)
+###############################################################################
+
+name: openclaw-evermemos
+
+services:
+  evermemos:
+    build:
+      context: .
+      args:
+        EVERMEMOS_COMMIT: 3c9a2d02460748310c7707048f7ed6b6bb078ab4
+    restart: unless-stopped
+    ports:
+      - "1995:1995"
+    env_file:
+      - .env
+    environment:
+      # All backing services run inside the container on localhost
+      MONGODB_HOST: 127.0.0.1
+      MONGODB_PORT: "27017"
+      MONGODB_USERNAME: ""
+      MONGODB_PASSWORD: ""
+      MONGODB_DATABASE: memsys
+      MONGODB_URI_PARAMS: "socketTimeoutMS=15000"
+      ES_HOSTS: http://127.0.0.1:9200
+      MILVUS_HOST: 127.0.0.1
+      MILVUS_PORT: "19530"
+      REDIS_HOST: 127.0.0.1
+      REDIS_PORT: "6379"
+    volumes:
+      - evermemos_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:1995/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+
+volumes:
+  evermemos_data:

@@ -233,3 +233,85 @@ export async function ensureGroupMembership(
     },
   ]);
 }
+
+/**
+ * Ensure a subject is registered as an owner of a group.
+ * Owners have admin permission (can share memories from their groups).
+ * Idempotent (uses TOUCH operation).
+ */
+export async function ensureGroupOwnership(
+  spicedb: SpiceDbClient,
+  groupId: string,
+  owner: Subject,
+): Promise<string | undefined> {
+  return spicedb.writeRelationships([
+    {
+      resourceType: "group",
+      resourceId: groupId,
+      relation: "owner",
+      subjectType: owner.type,
+      subjectId: owner.id,
+    },
+  ]);
+}
+
+// ============================================================================
+// Share / Unshare
+// ============================================================================
+
+/**
+ * Check if a subject has share permission on a memory fragment.
+ * Share is granted to: shared_by (storer) + source_group->admin (group owners).
+ */
+export async function canShareFragment(
+  spicedb: SpiceDbClient,
+  subject: Subject,
+  fragmentId: string,
+  zedToken?: string,
+): Promise<boolean> {
+  return spicedb.checkPermission({
+    resourceType: "memory_fragment",
+    resourceId: fragmentId,
+    permission: "share",
+    subjectType: subject.type,
+    subjectId: subject.id,
+    consistency: tokenConsistency(zedToken),
+  });
+}
+
+/**
+ * Share a memory fragment with one or more subjects by writing `involves` relationships.
+ * This grants view permission to the targets (and their agents via involves->represents).
+ */
+export async function shareFragment(
+  spicedb: SpiceDbClient,
+  fragmentId: string,
+  targets: Subject[],
+): Promise<string | undefined> {
+  const tuples: RelationshipTuple[] = targets.map((target) => ({
+    resourceType: "memory_fragment",
+    resourceId: fragmentId,
+    relation: "involves",
+    subjectType: target.type,
+    subjectId: target.id,
+  }));
+  return spicedb.writeRelationships(tuples);
+}
+
+/**
+ * Unshare a memory fragment by removing `involves` relationships for the given targets.
+ */
+export async function unshareFragment(
+  spicedb: SpiceDbClient,
+  fragmentId: string,
+  targets: Subject[],
+): Promise<void> {
+  const tuples: RelationshipTuple[] = targets.map((target) => ({
+    resourceType: "memory_fragment",
+    resourceId: fragmentId,
+    relation: "involves",
+    subjectType: target.type,
+    subjectId: target.id,
+  }));
+  await spicedb.deleteRelationships(tuples);
+}

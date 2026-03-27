@@ -1,0 +1,21 @@
+###############################################################################
+# openclaw-memory-rebac — Combined stack (EverMemOS + SpiceDB)
+#
+# Brings up the full memory service stack with EverMemOS as the backend:
+#   - EverMemOS FastAPI server + MongoDB + Milvus + Elasticsearch + Redis
+#   - SpiceDB authorization engine + PostgreSQL
+#
+# Usage:
+#   cd docker/evermemos && cp .env.example .env  # configure API keys
+#   cd docker && docker compose -f docker-compose.evermemos.yml up -d
+#
+# EverMemOS endpoint:  http://localhost:1995
+# SpiceDB endpoint:    localhost:50051 (insecure)
+#
+# To use Graphiti instead:
+#   docker compose up -d              # uses docker-compose.yml (Graphiti + SpiceDB)
+###############################################################################
+
+include:
+  - path: ./spicedb/docker-compose.yml
+  - path: ./evermemos/docker-compose.yml

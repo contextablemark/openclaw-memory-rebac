@@ -10,8 +10,10 @@ definition agent {
 
 definition group {
     relation member: person | agent
-    permission access = member
-    permission contribute = member
+    relation owner: person | agent
+    permission access = member + owner
+    permission contribute = member + owner
+    permission admin = owner
 }
 
 definition memory_fragment {
@@ -24,4 +26,6 @@ definition memory_fragment {
     permission view = involves + shared_by + source_group->access + involves->represents
     // Can delete if: you shared it (owner-level control)
     permission delete = shared_by
+    // Can share if: you shared it, or you are an admin of the source group
+    permission share = shared_by + source_group->admin
 }

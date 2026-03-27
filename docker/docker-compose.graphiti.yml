@@ -6,7 +6,7 @@
 #   - SpiceDB authorization engine + PostgreSQL
 #
 # Usage:
-#   docker compose up -d
+#   docker compose -f docker-compose.graphiti.yml up -d
 #
 # Graphiti endpoint:  http://localhost:8000
 # SpiceDB endpoint:   localhost:50051 (insecure)

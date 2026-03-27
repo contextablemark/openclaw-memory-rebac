@@ -5,6 +5,41 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-03-27
+
+### Added
+
+- **EverMemOS backend** (`backends/evermemos.ts`): Second storage backend, implementing the full `MemoryBackend` interface against the EverMemOS MemCell-based memory system. Supports episodic memory, profile, foresight, and event log memory types with configurable hybrid/keyword/vector retrieval. Store returns a UUID anchor immediately (202 Accepted); search aggregates results from group-keyed response structure. Memory type mapping: `episodic_memory`→`chunk`, `profile`→`summary`, `foresight`→`summary`, `event_log`→`fact`, with context prefixes (`episode:`, `profile:`, `foresight:`, `event:`) for downstream disambiguation.
+- **EverMemOS Docker stack** (`docker/evermemos/`): All-in-one container running MongoDB, Elasticsearch, Milvus, Redis, and EverMemOS API server via supervisord. Built from source (pinned to commit `3c9a2d0`). Milvus binaries extracted from official `milvusdb/milvus` image via multi-stage build. `entrypoint.sh` generates `.env` from Docker environment variables. Compose file at `docker/docker-compose.evermemos.yml`.
+- **Trace overlay endpoint** (`docker/evermemos/trace_overlay.py`): Read-only FastAPI route (`GET /api/v1/memories/trace/{message_id}`) added to the EverMemOS Docker image. Traces the internal linkage chain (`memory_request_logs` → `memcells` → episodic/foresight/event_log collections) to return the MongoDB ObjectIds of all derived memories produced from a given ingestion message. Returns `status: "not_found"|"processing"|"complete"` with `all_ids` array. Uses pymongo with `asyncio.to_thread` for FastAPI compatibility. This endpoint is the bridge between store-time UUID anchors and search-time MongoDB ObjectIds.
+- **Fragment ID resolution for EverMemOS** (`discoverFragmentIds`, `resolveAnchors`): Two-phase resolution of the fragment ID mismatch (store returns UUIDs, search returns MongoDB ObjectIds):
+  - `discoverFragmentIds()` polls the trace overlay after store until extraction completes, returning actual ObjectIds for SpiceDB relationship writing. Configurable via `discoveryPollIntervalMs` (default 3s) and `discoveryTimeoutMs` (default 120s).
+  - `resolveAnchors()` provides lazy resolution at recall time — if `discoverFragmentIds` timed out, the next `memory_recall` resolves anchors via the trace endpoint and updates SpiceDB in the background, making future recalls fast.
+- **`resolveAnchors` on `MemoryBackend` interface** (`backend.ts`): Optional method for backends where store-time IDs differ from search-time IDs. Returns `Map<anchor, resolvedIds[]>`. Used by the lazy resolution path in `memory_recall`.
+- **`memory_share` tool**: Share a specific memory fragment with one or more people/agents, granting them view access via SpiceDB `involves` relationships. Accepts type-prefixed IDs from `memory_recall` (e.g. `fact:UUID`, `chunk:UUID`). Only the memory's creator (`shared_by`) or a group admin (`source_group->admin`) can share.
+- **`memory_unshare` tool**: Revoke view access by removing `involves` relationships. Same permission model as `memory_share`.
+- **SpiceDB share/unshare authorization** (`authorization.ts`): `canShareFragment`, `shareFragment`, `unshareFragment`, `ensureGroupOwnership` helpers. `canShareFragment` checks the new `share` permission; `shareFragment`/`unshareFragment` write/delete `involves` tuples.
+- **SpiceDB schema: `owner` relation and `share`/`admin` permissions** (`schema.zed`): Groups now have an `owner` relation with `admin` permission. Memory fragments gain a `share` permission granted to `shared_by + source_group->admin`, enabling group owners to share any memory from their groups.
+- **`groupOwners` config** (`config.ts`): Maps group IDs to owner person IDs (e.g. `{"slack-engineering": ["U0123"]}`). At startup, writes `group:X #owner person:Y` relationships to SpiceDB, activating admin-level sharing for those groups.
+- **Backend-agnostic E2E contract tests** (`e2e-backend.test.ts`): 13 tests validating the `MemoryBackend` interface contract against any configured backend (`E2E_BACKEND` env var). Covers lifecycle, SpiceDB schema, store→search→forget, authorization, share/unshare chain, group ownership, and graceful error handling.
+- **EverMemOS-specific E2E tests** (`e2e-evermemos.test.ts`): 8 tests covering EverMemOS-specific behavior: fragment anchor semantics, `discoverFragmentIds` capability, type mapping and context prefixes, `enrichSession` integration, memory type filtering, `customPrompt` handling, and a comprehensive fragment-level auth flow test (trace → resolve → write SpiceDB → share → unshare → involves → search post-filter).
+- **EverMemOS unit tests** (`backends/evermemos.test.ts`): 10 tests covering store, search, type mapping, `discoverFragmentIds` polling, `resolveAnchors`, timeout handling, and error paths.
+- **Backend registry: `evermemos` entry** (`backends/registry.ts`): Static import and registration of the EverMemOS backend module.
+- **npm scripts**: `test:e2e:backend` (backend-agnostic E2E), `test:e2e:evermemos` (EverMemOS-specific E2E).
+
+### Changed
+
+- **Lazy resolution in `memory_recall`** (`index.ts`): When the involves-based post-filter yields 0 results but candidate search results exist, the recall path now attempts `resolveAnchors` to resolve stale UUID anchors to actual MongoDB ObjectIds. On success, SpiceDB relationships are updated in the background so future recalls skip the resolution step.
+- **`discoverFragmentIds` comment updated** (`index.ts`): Documents both Graphiti (polls `/episodes/{id}/edges`) and EverMemOS (polls trace overlay) discovery paths, plus fallback behavior.
+- **Docker compose renamed**: `docker/docker-compose.yml` → `docker/docker-compose.graphiti.yml` to distinguish from the new EverMemOS compose file.
+- **E2E test refactored**: `e2e.test.ts` reduced from Graphiti-specific to a thin wrapper; backend-agnostic tests extracted to `e2e-backend.test.ts`.
+- **Build script updated** (`package.json`): Now copies `backends/evermemos.defaults.json` to `dist/backends/` alongside `graphiti.defaults.json`.
+
+### Migration
+
+- **SpiceDB schema update required.** The `schema.zed` adds `owner` relation to `group`, `admin` permission to `group`, and `share` permission to `memory_fragment`. Run `schema-write` or restart the plugin (auto-schema-write handles it). Existing relationships are unaffected — these are purely additive.
+- **Config update for EverMemOS.** To switch from Graphiti to EverMemOS, set `"backend": "evermemos"` and add an `"evermemos"` config block with `endpoint`, `defaultGroupId`, `retrieveMethod`, `memoryTypes`, and `defaultSenderId`. See `docs/configuration-guide.md`.
+
 ## [0.3.8] - 2026-03-24
 
 ### Fixed
@@ -164,7 +199,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Auto-schema-write on first startup
   - Auto-membership for configured subject in default group
 - **SpiceDB Docker Compose** (`docker/spicedb/`): PostgreSQL-backed SpiceDB with migration
-- **Combined Docker Compose** (`docker/docker-compose.yml`): Single-command full stack startup
+- **Combined Docker Compose** (`docker/docker-compose.graphiti.yml`): Single-command full stack startup
 - **MemoryBackend interface** (`backend.ts`): Defines the contract for pluggable storage engines
   - `store`, `searchGroup`, `enrichSession`, `getConversationHistory`
   - `healthCheck`, `getStatus`, `deleteGroup`, `listGroups`, `deleteFragment`

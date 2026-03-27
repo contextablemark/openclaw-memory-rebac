@@ -49,6 +49,26 @@ This means you can change your storage engine without touching authorization, an
 - **Docker image**: Custom image (`docker/graphiti/`) with per-component LLM/embedder/reranker configuration, BGE reranker support, and runtime patches for local-model compatibility
 - **Best for**: Rich entity-relationship extraction, structured knowledge
 
+### EverMemOS
+
+[EverMemOS](https://github.com/EverMind-AI/EverMemOS) is a memory system with MemCell boundary detection and parallel LLM extraction. It produces richer memory types — episodic memories, user profiles, foresight (predictions), and event logs.
+
+- **Storage**: MongoDB + Milvus (vector) + Elasticsearch (keyword)
+- **Transport**: REST API to EverMemOS FastAPI server (port 1995)
+- **Extraction**: MemCell pipeline — automatic boundary detection, then parallel LLM extraction of multiple memory types
+- **Search**: Hybrid (vector + keyword + reranking), configurable via `retrieveMethod`
+- **Docker image**: Built from source (`docker/evermemos/Dockerfile`), pinned to upstream release tag (v1.1.0)
+- **Best for**: Rich memory type diversity, foresight extraction, hybrid search
+- **Limitation**: No `involves` at ingestion — use `memory_share` for post-hoc cross-group sharing
+
+#### EverMemOS-specific config
+
+| Key | Default | Description |
+|---|---|---|
+| `retrieveMethod` | `"hybrid"` | Search method: `"hybrid"`, `"vector"`, `"keyword"` |
+| `memoryTypes` | `["episodic_memory", "profile", "foresight", "event_log"]` | Which memory types to search |
+| `defaultSenderId` | `"system"` | Sender ID for stored messages |
+
 ## Installation
 
 ```bash
@@ -68,22 +88,35 @@ Then restart the gateway. On first start, the plugin automatically:
 ### Prerequisites
 
 - [Docker](https://docs.docker.com/get-docker/) and Docker Compose
-- A running LLM endpoint (Graphiti uses an LLM for entity extraction and embeddings)
+- A running LLM endpoint (both backends use LLMs for memory extraction)
 
 ### 1. Start Infrastructure
+
+**Option A: Graphiti backend (default)**
 
 ```bash
 cd docker
 cp graphiti/.env.example graphiti/.env
 # Edit graphiti/.env — set your LLM endpoint and API key
-docker compose up -d
+docker compose -f docker-compose.graphiti.yml up -d
 ```
 
-This starts the full stack:
-- **Neo4j** on port 7687 (graph database, browser on port 7474)
-- **Graphiti** on port 8000 (FastAPI REST server)
-- **PostgreSQL** on port 5432 (persistent datastore for SpiceDB)
-- **SpiceDB** on port 50051 (authorization engine)
+This starts: Neo4j (7687), Graphiti (8000), PostgreSQL (5432), SpiceDB (50051).
+
+**Option B: EverMemOS backend**
+
+```bash
+cd docker/evermemos
+cp .env.example .env
+# Edit .env — set LLM_API_KEY, VECTORIZE_API_KEY, RERANK_API_KEY
+
+cd docker
+docker compose -f docker-compose.evermemos.yml up -d
+```
+
+This starts: EverMemOS all-in-one container (1995), PostgreSQL (5432), SpiceDB (50051). First run builds the image from source (~5 min).
+
+Both options share the same SpiceDB instance with the same authorization schema.
 
 ### 2. Restart the Gateway
 
@@ -446,13 +479,17 @@ rebac-mem import --include-sessions
 
 ## Docker Compose
 
-The `docker/` directory contains a modular Docker Compose stack. The top-level `docker/docker-compose.yml` includes both sub-stacks:
+The `docker/` directory contains modular Docker Compose stacks. Two top-level compose files select which memory backend to pair with SpiceDB:
 
 ```bash
-# Start the full stack (Graphiti + SpiceDB)
-cd docker
-docker compose up -d
+# Graphiti + SpiceDB
+cd docker && docker compose -f docker-compose.graphiti.yml up -d
+
+# EverMemOS + SpiceDB
+cd docker && docker compose -f docker-compose.evermemos.yml up -d
 ```
+
+Both share the same SpiceDB sub-stack — same authorization schema, same permissions model.
 
 ### Graphiti Stack (`docker/graphiti/`)
 
@@ -475,11 +512,30 @@ The custom Docker image extends `zepai/graphiti:latest` with:
 | `spicedb-migrate` | — | One-shot: runs SpiceDB DB migrations |
 | `spicedb` | 50051, 8080 | Authorization engine (gRPC, HTTP health) |
 
+### EverMemOS Stack (`docker/evermemos/`)
+
+Single all-in-one container bundling all required services via supervisord:
+
+| Component | Internal Port | Description |
+|-----------|---------------|-------------|
+| MongoDB 7.0 | 27017 | Document store |
+| Elasticsearch 8 | 9200 | Keyword search |
+| Milvus v2.5.2 | 19530 | Vector database (standalone with embedded etcd) |
+| Redis 7 | 6379 | Cache |
+| EverMemOS API | **1995 (exposed)** | FastAPI server (built from source) |
+
+The image is built from the [EverMemOS](https://github.com/EverMind-AI/EverMemOS) repository, pinned to release tag `v1.1.0`. Update `EVERMEMOS_VERSION` in `docker/evermemos/docker-compose.yml` to upgrade. Requires ~4 GB RAM.
+
+Requires API keys in `docker/evermemos/.env` for LLM, embedding (vectorize), and reranking services. See `.env.example` for all options.
+
 ### Running Stacks Independently
 
 ```bash
 # Graphiti only
 cd docker/graphiti && docker compose up -d
+
+# EverMemOS only (without SpiceDB)
+cd docker/evermemos && docker compose up -d
 
 # SpiceDB only
 cd docker/spicedb && docker compose up -d
@@ -511,11 +567,14 @@ OPENCLAW_LIVE_TEST=1 npm run test:e2e
 ├── openclaw.plugin.json      # Plugin manifest
 ├── package.json
 ├── backends/
-│   └── graphiti.ts           # Graphiti REST backend implementation
+│   ├── graphiti.ts           # Graphiti REST backend implementation
+│   ├── evermemos.ts          # EverMemOS REST backend implementation
+│   └── registry.ts           # Static backend registry
 ├── bin/
 │   └── rebac-mem.ts          # Standalone CLI entry point
 ├── docker/
-│   ├── docker-compose.yml    # Combined stack (includes both sub-stacks)
+│   ├── docker-compose.graphiti.yml   # Graphiti + SpiceDB
+│   ├── docker-compose.evermemos.yml # EverMemOS + SpiceDB
 │   ├── graphiti/
 │   │   ├── docker-compose.yml
 │   │   ├── Dockerfile        # Custom Graphiti image with patches
@@ -523,10 +582,17 @@ OPENCLAW_LIVE_TEST=1 npm run test:e2e
 │   │   ├── graphiti_overlay.py # OpenClawGraphiti class
 │   │   ├── startup.py        # Runtime patches and uvicorn launch
 │   │   └── .env.example
+│   ├── evermemos/
+│   │   ├── docker-compose.yml # EverMemOS all-in-one container
+│   │   ├── Dockerfile         # All-in-one: MongoDB+ES+Milvus+Redis+EverMemOS
+│   │   ├── supervisord.conf   # Process manager config
+│   │   └── .env.example       # LLM, vectorize, rerank API keys
 │   └── spicedb/
 │       └── docker-compose.yml
-├── *.test.ts                 # Unit tests (96)
-├── e2e.test.ts               # End-to-end tests (15, live services)
+├── *.test.ts                 # Unit tests (178)
+├── e2e.test.ts               # Graphiti E2E tests (14, live services)
+├── e2e-backend.test.ts       # Backend-agnostic E2E contract (13)
+├── e2e-evermemos.test.ts     # EverMemOS-specific E2E (7)
 ├── vitest.config.ts          # Unit test config
 └── vitest.e2e.config.ts      # E2E test config
 ```

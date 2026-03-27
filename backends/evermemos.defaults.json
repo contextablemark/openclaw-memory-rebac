@@ -1,0 +1,10 @@
+{
+  "endpoint": "http://localhost:1995",
+  "defaultGroupId": "main",
+  "requestTimeoutMs": 30000,
+  "retrieveMethod": "hybrid",
+  "memoryTypes": ["episodic_memory", "profile", "foresight", "event_log"],
+  "defaultSenderId": "system",
+  "discoveryPollIntervalMs": 3000,
+  "discoveryTimeoutMs": 120000
+}

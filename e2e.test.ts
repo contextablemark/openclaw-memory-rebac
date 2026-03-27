@@ -1,13 +1,20 @@
 /**
- * E2E Tests for openclaw-memory-rebac
+ * Graphiti-Specific E2E Tests
  *
- * These tests require live services:
+ * Tests Graphiti-specific features that are NOT covered by the
+ * backend-agnostic contract suite in e2e-backend.test.ts.
+ *
+ * Focus areas:
+ * - Entity/fact extraction from conversations
+ * - IS_DUPLICATE_OF filtering (#12)
+ * - Graphiti-specific CLI commands (episodes, fact, clear-graph)
+ * - Stenographer features (per-agent identity, identity linking, owner-aware recall)
+ *
+ * Requires live services:
  * - SpiceDB at localhost:50051 (insecure)
  * - Graphiti backend at localhost:8000
  *
- * Run with: OPENCLAW_LIVE_TEST=1 vitest run --config vitest.e2e.config.ts
- *
- * To skip: vitest run (without OPENCLAW_LIVE_TEST)
+ * Run with: OPENCLAW_LIVE_TEST=1 vitest run --config vitest.e2e.config.ts e2e.test.ts
  */
 
 import { describe, test, expect, beforeAll, afterAll } from "vitest";
@@ -18,7 +25,6 @@ import {
   lookupAgentOwner,
   lookupViewableFragments,
   writeFragmentRelationships,
-  deleteFragmentRelationships,
   canDeleteFragment,
   canWriteToGroup,
   ensureGroupMembership,
@@ -39,7 +45,7 @@ let backend: GraphitiBackend;
 let testSubject: Subject;
 let testGroup: string;
 
-describe("e2e: full stack integration", () => {
+describe("e2e: Graphiti-specific features", () => {
 
   beforeAll(async () => {
     if (!LIVE_TEST) return;
@@ -84,132 +90,11 @@ describe("e2e: full stack integration", () => {
     }
   });
 
-  skipE2E("backend health check succeeds", async () => {
-    const healthy = await backend.healthCheck();
-    expect(healthy).toBe(true);
-  });
+  // --------------------------------------------------------------------------
+  // Graphiti-specific CLI commands
+  // --------------------------------------------------------------------------
 
-  skipE2E("backend getStatus returns healthy status", async () => {
-    const status = await backend.getStatus();
-    expect(status.backend).toBe(backend.name);
-    expect(status.healthy).toBe(true);
-  });
-
-  skipE2E("SpiceDB connectivity works", async () => {
-    const schema = await spicedb.readSchema();
-    expect(schema).toContain("definition memory_fragment");
-  });
-
-  skipE2E("full memory lifecycle: store → authorize → search → forget", async () => {
-    const testContent = "Sarah and Tom are working together at Acme Corp on the mobile app redesign project";
-
-    // 1. Store memory via backend
-    const storeStart = Date.now();
-    const storeResult = await backend.store({
-      content: testContent,
-      groupId: testGroup,
-      sourceDescription: "e2e test",
-    });
-    const storeTime = Date.now() - storeStart;
-
-    const fragmentId = await storeResult.fragmentId;
-    expect(fragmentId).toBeTruthy();
-    expect(fragmentId).toMatch(/[0-9a-f-]{36}/); // UUID format
-
-    console.log(`[graphiti] Store operation: ${storeTime}ms`);
-
-    // 2. Write SpiceDB authorization
-    const writeToken = await writeFragmentRelationships(spicedb, {
-      fragmentId,
-      groupId: testGroup,
-      sharedBy: testSubject,
-    });
-    expect(writeToken).toBeTruthy();
-
-    // 3. Verify authorization
-    const authorizedGroups = await lookupAuthorizedGroups(spicedb, testSubject, writeToken);
-    expect(authorizedGroups).toContain(testGroup);
-
-    const canDelete = await canDeleteFragment(spicedb, testSubject, fragmentId, writeToken);
-    expect(canDelete).toBe(true);
-
-    // 4. Search for stored content
-    const searchResults = await backend.searchGroup({
-      query: "Sarah Tom Acme mobile app",
-      groupId: testGroup,
-      limit: 10,
-    });
-
-    expect(Array.isArray(searchResults)).toBe(true);
-
-    // 5. Delete fragment
-    if (backend.deleteFragment) {
-      await backend.deleteFragment(fragmentId);
-    }
-
-    // 6. De-authorize in SpiceDB
-    const deleteToken = await deleteFragmentRelationships(spicedb, fragmentId);
-    expect(deleteToken).toBeTruthy();
-
-    // 7. Verify de-authorization
-    const canDeleteAfter = await canDeleteFragment(spicedb, testSubject, fragmentId, deleteToken);
-    expect(canDeleteAfter).toBe(false);
-  }, 600000);
-
-  skipE2E("authorization prevents unauthorized access", async () => {
-    const unauthorizedSubject: Subject = { type: "person", id: "unauthorized-person" };
-
-    // This subject should not see the test group
-    const groups = await lookupAuthorizedGroups(spicedb, unauthorizedSubject);
-    expect(groups).not.toContain(testGroup);
-  });
-
-  skipE2E("group membership grants access", async () => {
-    const newMember: Subject = { type: "person", id: `e2e-member-${Date.now()}` };
-
-    // Before membership: no access
-    let groups = await lookupAuthorizedGroups(spicedb, newMember);
-    expect(groups).not.toContain(testGroup);
-
-    // Add membership
-    const zedToken = await ensureGroupMembership(spicedb, testGroup, newMember);
-
-    // After membership: has access (use zedToken for consistency)
-    groups = await lookupAuthorizedGroups(spicedb, newMember, zedToken);
-    expect(groups).toContain(testGroup);
-  });
-
-  skipE2E("searchGroup handles empty results gracefully", async () => {
-    const results = await backend.searchGroup({
-      query: "nonexistent query xyz123",
-      groupId: testGroup,
-      limit: 10,
-    });
-
-    expect(Array.isArray(results)).toBe(true);
-    expect(results.length).toBeGreaterThanOrEqual(0);
-  });
-
-  skipE2E("listGroups returns backend datasets", async () => {
-    const groups = await backend.listGroups();
-    expect(Array.isArray(groups)).toBe(true);
-
-    // Each group should have name and groupId
-    for (const group of groups) {
-      expect(group.name).toBeTruthy();
-      expect(group.groupId).toBeTruthy();
-    }
-  });
-
-  skipE2E("getConversationHistory returns array", async () => {
-    const sessionId = `e2e-session-${Date.now()}`;
-    const history = await backend.getConversationHistory(sessionId);
-
-    expect(Array.isArray(history)).toBe(true);
-    // May be empty if no history exists - that's OK
-  });
-
-  skipE2E("backend-specific CLI commands are registered", async () => {
+  skipE2E("Graphiti-specific CLI commands are registered", async () => {
     const { registerCommands } = await import("./cli.js");
     const commands: string[] = [];
 

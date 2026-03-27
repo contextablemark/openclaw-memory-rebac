@@ -6,76 +6,97 @@
 # Unit tests (no services required)
 npm test
 
-# E2E tests (requires live services)
-cd docker && docker compose up -d
+# E2E tests — Graphiti backend (requires Graphiti + SpiceDB)
+cd docker && docker compose -f docker-compose.graphiti.yml up -d
 OPENCLAW_LIVE_TEST=1 npm run test:e2e
+
+# E2E tests — EverMemOS backend (requires EverMemOS + SpiceDB)
+cd docker/evermemos && cp .env.example .env   # configure API keys first
+cd docker && docker compose -f docker-compose.evermemos.yml up -d
+E2E_BACKEND=evermemos npm run test:e2e:backend
+npm run test:e2e:evermemos
 ```
 
 ## Test Suites
 
 ### Unit Tests (`npm test`)
 
-96 tests, no external services required. All dependencies mocked.
+178 tests, no external services required. All dependencies mocked.
 
-- **search.test.ts** (22 tests) — Backend-agnostic search orchestration
-- **config.test.ts** (20 tests) — Config parsing and backend factory
-- **backends/graphiti.test.ts** (15 tests) — GraphitiBackend with mocked REST API
-- **cli.test.ts** (17 tests) — All CLI commands
-- **index.test.ts** (19 tests) — Plugin registration and tools
+- **search.test.ts** (23 tests) — Backend-agnostic search orchestration
+- **config.test.ts** (27 tests) — Config parsing and backend factory
+- **backends/graphiti.test.ts** (19 tests) — GraphitiBackend with mocked REST API
+- **backends/evermemos.test.ts** (25 tests) — EverMemOSBackend with mocked REST API
+- **cli.test.ts** (27 tests) — All CLI commands
+- **index.test.ts** (54 tests) — Plugin registration, tools, share/unshare
 - **authorization.test.ts** (3 tests) — Type signatures
 
-### E2E Tests (`npm run test:e2e`)
+### E2E Tests
 
-15 tests, requires live services. Set `OPENCLAW_LIVE_TEST=1` to enable.
+All E2E tests require live services and have 600-second timeouts.
 
-- **e2e.test.ts** — Full lifecycle integration:
-  - SpiceDB schema write and authorization enforcement
-  - Memory store → authorize → search → forget lifecycle
-  - Group membership and unauthorized access blocking
-  - Simple 2-turn conversation extraction
-  - Complex multi-entity professional relationships
-  - Temporal references and work artifacts
-  - Multi-turn technical conversation extraction
-  - Backend-specific features (deleteFragment)
-
-E2E tests have 600-second (10-minute) timeouts to accommodate Ollama/local model processing times.
+| Suite | Script | Tests | Backend | Purpose |
+|---|---|---|---|---|
+| `e2e.test.ts` | `npm run test:e2e` | 14 | Graphiti | Extraction, CLI, stenographer, IS_DUPLICATE_OF |
+| `e2e-backend.test.ts` | `npm run test:e2e:backend` | 13 | Any (via `E2E_BACKEND`) | Contract: health, lifecycle, auth, share/unshare |
+| `e2e-evermemos.test.ts` | `npm run test:e2e:evermemos` | 7 | EverMemOS | fragmentId semantics, type mapping, anchor auth |
 
 ## Running Live Tests
 
-### 1. Start Backend Services
+### Graphiti Backend
 
 ```bash
-# Full stack (Graphiti + SpiceDB)
+# 1. Start services
 cd docker
-docker compose up -d
+docker compose -f docker-compose.graphiti.yml up -d
+docker compose -f docker-compose.graphiti.yml ps   # wait for all healthy
 
-# Wait for services to be ready
-docker compose ps
-```
-
-### 2. Configure Environment
-
-```bash
-cp .env.example .env
-```
-
-Edit `.env` if needed (defaults work for docker-compose stack):
-
-```bash
-OPENCLAW_LIVE_TEST=1
-REBAC_MEM_BACKEND=graphiti
-SPICEDB_TOKEN=dev_token
-```
-
-### 3. Run Tests
-
-```bash
+# 2. Run tests
 OPENCLAW_LIVE_TEST=1 npm run test:e2e
+
+# 3. (Optional) Run backend-agnostic suite against Graphiti
+E2E_BACKEND=graphiti npm run test:e2e:backend
 ```
+
+### EverMemOS Backend
+
+EverMemOS requires LLM, embedding, and reranking API keys. The all-in-one Docker image bundles MongoDB, Elasticsearch, Milvus, Redis, and EverMemOS in a single container (~4 GB RAM).
+
+```bash
+# 1. Configure API keys
+cd docker/evermemos
+cp .env.example .env
+# Edit .env — set LLM_API_KEY, VECTORIZE_API_KEY, RERANK_API_KEY
+
+# 2. Start services (builds image on first run, ~5 min)
+cd docker
+docker compose -f docker-compose.evermemos.yml up -d
+
+# Watch build progress:
+docker compose -f docker-compose.evermemos.yml logs -f evermemos
+
+# 3. Verify services are healthy (allow ~60s for internal services to start)
+docker compose -f docker-compose.evermemos.yml ps
+
+# 4. Run tests
+E2E_BACKEND=evermemos npm run test:e2e:backend    # backend-agnostic contract
+npm run test:e2e:evermemos                         # EverMemOS-specific tests
+```
+
+### Environment Variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `OPENCLAW_LIVE_TEST` | — | Set to `1` to enable E2E tests |
+| `E2E_BACKEND` | `graphiti` | Backend for `e2e-backend.test.ts` |
+| `SPICEDB_ENDPOINT` | `localhost:50051` | SpiceDB gRPC endpoint |
+| `SPICEDB_TOKEN` | `dev_token` | SpiceDB preshared key |
+| `GRAPHITI_ENDPOINT` | `http://localhost:8000` | Graphiti REST endpoint |
+| `EVERMEMOS_ENDPOINT` | `http://localhost:1995` | EverMemOS REST endpoint |
 
 ## Test Organization
 
-### Backend-Agnostic Tests
+### Backend-Agnostic Unit Tests
 
 Most functionality is backend-agnostic and tested via mocks:
 
@@ -83,27 +104,25 @@ Most functionality is backend-agnostic and tested via mocks:
 - **Search orchestration** (search.test.ts) — Parallel group search
 - **Config parsing** (config.test.ts) — All config variations
 - **CLI commands** (cli.test.ts) — Command registration
-- **Plugin registration** (index.test.ts) — Tool registration
+- **Plugin registration** (index.test.ts) — Tool registration, share/unshare
 
-### Backend-Specific Tests
+### Backend-Specific Unit Tests
 
-Each backend implementation has its own test file with mocked dependencies:
+Each backend has its own test file with mocked `global.fetch`:
 
-- **backends/graphiti.test.ts** — Graphiti REST API client
-  - Episode creation via POST /messages and UUID resolution via GET /episodes
-  - Fact/entity search via POST /search
-  - Group deletion, health checks, status
+- **backends/graphiti.test.ts** — Episode creation, UUID polling, fact search, deletion routing
+- **backends/evermemos.test.ts** — Immediate fragmentId, memory type mapping, enrichSession, health proxy
 
-### E2E Tests
+### E2E Test Structure
 
-**e2e.test.ts** runs against live services:
+**Backend-agnostic contract** (`e2e-backend.test.ts`):
+Uses `backendRegistry` to instantiate whichever backend `E2E_BACKEND` specifies. Tests the `MemoryBackend` interface contract: health, store, search, authorization, share/unshare chain.
 
-1. Start with clean slate (SpiceDB schema write)
-2. Store memories (backend + SpiceDB authorization)
-3. Search with authorization (parallel group queries)
-4. Test authorization boundaries (unauthorized access blocked)
-5. Complex relationship extraction (multi-entity, temporal, multi-turn)
-6. Forget memories (backend deletion + SpiceDB cleanup)
+**Graphiti-specific** (`e2e.test.ts`):
+Entity/fact extraction, IS_DUPLICATE_OF filtering, Graphiti CLI commands, stenographer features (per-agent identity, identity linking, owner-aware recall).
+
+**EverMemOS-specific** (`e2e-evermemos.test.ts`):
+Integration tests for our EverMemOS layer: fragmentId resolves immediately (no polling), discoverFragmentIds is undefined, SpiceDB auth on anchor IDs, memory type mapping + context prefixes, enrichSession API, memoryTypes config filtering.
 
 ## Debugging
 
@@ -116,6 +135,9 @@ cd docker/graphiti && docker compose logs -f graphiti
 # Neo4j
 cd docker/graphiti && docker compose logs -f neo4j
 
+# EverMemOS (all-in-one — all service logs appear here)
+cd docker/evermemos && docker compose logs -f evermemos
+
 # SpiceDB
 cd docker/spicedb && docker compose logs -f spicedb
 ```
@@ -125,25 +147,31 @@ cd docker/spicedb && docker compose logs -f spicedb
 Use the CLI for manual backend testing:
 
 ```bash
-# Configure via environment
+# Graphiti
 export SPICEDB_TOKEN=dev_token
 export GRAPHITI_ENDPOINT=http://localhost:8000
-
-# Test commands
 npm run cli -- status
 npm run cli -- search "test query"
-npm run cli -- groups
 npm run cli -- episodes --last 5
+
+# EverMemOS
+export REBAC_MEM_BACKEND=evermemos
+export EVERMEMOS_ENDPOINT=http://localhost:1995
+npm run cli -- status
+npm run cli -- search "test query"
+npm run cli -- foresight --group main
 ```
 
 ### Clean Up
 
 ```bash
-# Stop all services
-cd docker && docker compose down
+# Graphiti stack
+cd docker && docker compose -f docker-compose.graphiti.yml down
+cd docker && docker compose -f docker-compose.graphiti.yml down -v   # remove volumes
 
-# Remove volumes (fresh start)
-cd docker && docker compose down -v
+# EverMemOS stack
+cd docker && docker compose -f docker-compose.evermemos.yml down
+cd docker && docker compose -f docker-compose.evermemos.yml down -v
 ```
 
 ## CI/CD Considerations
@@ -154,6 +182,7 @@ E2E tests require:
 - Docker compose (or Kubernetes for cloud CI)
 - GPU support (optional but recommended for performance)
 - Adequate timeout (10+ minutes per test suite with local models)
+- API keys for EverMemOS tests (LLM, vectorize, rerank)
 
 Example GitHub Actions:
 
@@ -166,14 +195,26 @@ test:
     - run: npm ci
     - run: npm test
 
-e2e:
+e2e-graphiti:
   runs-on: ubuntu-latest
   timeout-minutes: 20
   steps:
     - uses: actions/checkout@v4
     - uses: actions/setup-node@v4
     - run: npm ci
-    - run: cd docker && docker compose up -d
+    - run: cd docker && docker compose -f docker-compose.graphiti.yml up -d
     - run: OPENCLAW_LIVE_TEST=1 npm run test:e2e
-    - run: cd docker && docker compose down
+    - run: cd docker && docker compose -f docker-compose.graphiti.yml down
+
+e2e-evermemos:
+  runs-on: ubuntu-latest
+  timeout-minutes: 20
+  steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-node@v4
+    - run: npm ci
+    - run: cd docker && docker compose -f docker-compose.evermemos.yml up -d
+    - run: E2E_BACKEND=evermemos npm run test:e2e:backend
+    - run: npm run test:e2e:evermemos
+    - run: cd docker && docker compose -f docker-compose.evermemos.yml down
 ```

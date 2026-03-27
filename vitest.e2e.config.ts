@@ -2,7 +2,7 @@ import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   test: {
-    include: ["**/e2e.test.ts", "**/*.e2e.test.ts"],
+    include: ["**/e2e.test.ts", "**/*.e2e.test.ts", "**/e2e-*.test.ts"],
     testTimeout: 180000, // Allow sufficient time for graph operations
     hookTimeout: 180000,
     environment: "node",
