@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`memory_share` and `memory_unshare` in toolHint**: Agents are now made aware of the share/unshare tools via the injected `<memory-tools>` context in both unified and hybrid modes.
+
 ## [0.5.0] - 2026-03-30
 
 ### Added

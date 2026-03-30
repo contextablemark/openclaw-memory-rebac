@@ -863,6 +863,8 @@ const rebacMemoryPlugin = {
               "You have memory tools:\n" +
               "- memory_recall: Use this BEFORE saying you don't know or remember something. Search the long-term knowledge graph for facts, preferences, people, decisions.\n" +
               "- memory_store: Save important new information to the knowledge graph.\n" +
+              "- memory_share: Share a specific memory with other people/agents by ID.\n" +
+              "- memory_unshare: Revoke view access to a memory from people/agents.\n" +
               "- memory_promote: Promote recent memories into the long-term knowledge graph.\n" +
               "</memory-tools>";
 
@@ -911,6 +913,8 @@ const rebacMemoryPlugin = {
             "You have memory tools:\n" +
             "- memory_recall: Use this BEFORE saying you don't know or remember something. Search for facts, preferences, people, decisions.\n" +
             "- memory_store: Save important new information (preferences, decisions, facts about people).\n" +
+            "- memory_share: Share a specific memory with other people/agents by ID.\n" +
+            "- memory_unshare: Revoke view access to a memory from people/agents.\n" +
             "</memory-tools>";
 
           if (totalCount === 0) return { prependContext: toolHint };
