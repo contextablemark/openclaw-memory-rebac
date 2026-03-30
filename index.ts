@@ -1167,10 +1167,10 @@ const rebacMemoryPlugin = {
         try {
           const existing = await spicedb.readSchema();
           spicedbOk = true;
-          if (!existing || !existing.includes("memory_fragment")) {
-            api.logger.info("openclaw-memory-rebac: writing SpiceDB schema (first run)");
-            const schemaPath = join(dirname(fileURLToPath(import.meta.url)), "schema.zed");
-            const schema = readFileSync(schemaPath, "utf-8");
+          const schemaPath = join(dirname(fileURLToPath(import.meta.url)), "schema.zed");
+          const schema = readFileSync(schemaPath, "utf-8");
+          if (!existing || existing.trim() !== schema.trim()) {
+            api.logger.info("openclaw-memory-rebac: writing SpiceDB schema (first run or update)");
             await spicedb.writeSchema(schema);
             api.logger.info("openclaw-memory-rebac: SpiceDB schema written successfully");
           }

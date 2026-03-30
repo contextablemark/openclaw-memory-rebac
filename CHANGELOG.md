@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`memory_share` and `memory_unshare` in toolHint**: Agents are now made aware of the share/unshare tools via the injected `<memory-tools>` context in both unified and hybrid modes.
 
+### Fixed
+
+- **SpiceDB schema auto-update on startup**: Schema write check now compares full schema content instead of checking for `memory_fragment` keyword. Previously, adding new permissions (like `share`) to existing definitions would not trigger a schema update, causing `FAILED_PRECONDITION` errors at runtime.
+
 ## [0.5.0] - 2026-03-30
 
 ### Added

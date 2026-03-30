@@ -532,12 +532,18 @@ describe("openclaw-memory-rebac plugin", () => {
     expect(logs.some(log => log.includes("writing SpiceDB schema"))).toBe(true);
   });
 
-  test("service.start() skips schema write when already exists", async () => {
+  test("service.start() skips schema write when already up to date", async () => {
+    const { readFileSync } = await import("fs");
+    const { join, dirname } = await import("path");
+    const { fileURLToPath } = await import("url");
+    const schemaPath = join(dirname(fileURLToPath(import.meta.url)), "schema.zed");
+    const currentSchema = readFileSync(schemaPath, "utf-8");
+
     const { v1 } = await import("@authzed/authzed-node");
     const mockClient = v1.NewClient();
 
     mockClient.promises.readSchema = vi.fn().mockResolvedValue({
-      schemaText: "definition memory_fragment {...}",
+      schemaText: currentSchema,
     });
     mockClient.promises.writeSchema = vi.fn();
 
