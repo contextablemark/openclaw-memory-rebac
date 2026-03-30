@@ -1,7 +1,7 @@
 {
   "name": "@contextableai/openclaw-memory-rebac",
-  "version": "0.4.2",
-  "description": "OpenClaw two-layer memory plugin: SpiceDB ReBAC authorization + pluggable storage (Graphiti, EverMemOS)",
+  "version": "0.5.0",
+  "description": "OpenClaw composite memory plugin: SpiceDB ReBAC authorization with Graphiti knowledge graph (primary) and optional EverMemOS liminal memory",
   "type": "module",
   "license": "MIT",
   "repository": {

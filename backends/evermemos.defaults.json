@@ -4,7 +4,5 @@
   "requestTimeoutMs": 30000,
   "retrieveMethod": "hybrid",
   "memoryTypes": ["episodic_memory", "profile", "foresight", "event_log"],
-  "defaultSenderId": "system",
-  "discoveryPollIntervalMs": 3000,
-  "discoveryTimeoutMs": 120000
+  "defaultSenderId": "system"
 }

@@ -23,7 +23,7 @@ import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { rebacMemoryConfigSchema, createBackend, defaultGroupId } from "./config.js";
+import { rebacMemoryConfigSchema, createBackend, createLiminalBackend, defaultGroupId } from "./config.js";
 import { SpiceDbClient } from "./spicedb.js";
 import {
   lookupAuthorizedGroups,
@@ -147,8 +147,13 @@ const rebacMemoryPlugin = {
     }
 
     const backend = createBackend(cfg);
+    const liminal = cfg.isHybrid ? createLiminalBackend(cfg) : backend;
+    const isHybrid = cfg.isHybrid;
     const spicedb = new SpiceDbClient(cfg.spicedb);
     const backendDefaultGroupId = defaultGroupId(cfg);
+    const liminalDefaultGroupId = isHybrid
+      ? ((cfg.liminalConfig["defaultGroupId"] as string) ?? "main")
+      : backendDefaultGroupId;
 
     // Suppress transient gRPC rejections from @grpc/grpc-js during connection setup
     const grpcRejectionHandler = (reason: unknown) => {
@@ -202,7 +207,8 @@ const rebacMemoryPlugin = {
         name: "memory_recall",
         label: "Memory Recall",
         description:
-          "Search through memories using the knowledge graph. Returns results the current user is authorized to see. Supports session, long-term, or combined scope. REQUIRES a search query.",
+          "Search through memories using the knowledge graph. Returns results the current user is authorized to see. " +
+          "Supports session, long-term, or combined scope. REQUIRES a search query.",
         parameters: Type.Object({
           query: Type.String({ description: "REQUIRED: Search query for semantic matching" }),
           limit: Type.Optional(Type.Number({ description: "Max results (default: 10)" })),
@@ -292,42 +298,6 @@ const rebacMemoryPlugin = {
                       // Post-filter: only keep results the owner is authorized to view
                       const viewableSet = new Set(newIds);
                       ownerFragmentResults = candidateResults.filter(r => viewableSet.has(r.uuid));
-
-                      // Lazy resolution: if post-filter found nothing but we had viewable
-                      // fragment IDs and candidate results, the IDs may be unresolved
-                      // anchors (e.g. messageId UUIDs from a timed-out discoverFragmentIds).
-                      // Try resolving them to actual searchable IDs via the backend.
-                      if (ownerFragmentResults.length === 0 && candidateResults.length > 0 && backend.resolveAnchors) {
-                        const resolved = await backend.resolveAnchors(newIds);
-                        if (resolved.size > 0) {
-                          const resolvedSet = new Set([...resolved.values()].flat());
-                          ownerFragmentResults = candidateResults.filter(r => resolvedSet.has(r.uuid));
-
-                          // Background: update SpiceDB so future recalls are fast
-                          if (ownerFragmentResults.length > 0) {
-                            void (async () => {
-                              try {
-                                for (const [, objectIds] of resolved) {
-                                  for (const objId of objectIds) {
-                                    const wt = await writeFragmentRelationships(spicedb, {
-                                      fragmentId: objId,
-                                      groupId: newGroups[0],
-                                      sharedBy: ownerSubject,
-                                      involves: [ownerSubject],
-                                    });
-                                    if (wt) state.lastWriteToken = wt;
-                                  }
-                                }
-                                api.logger.info(
-                                  `openclaw-memory-rebac: lazy-resolved ${resolved.size} anchor(s) to ${ownerFragmentResults.length} fragment(s)`,
-                                );
-                              } catch (lazyErr) {
-                                api.logger.warn(`openclaw-memory-rebac: lazy SpiceDB update failed: ${String(lazyErr)}`);
-                              }
-                            })();
-                          }
-                        }
-                      }
                     }
                   }
                 }
@@ -758,6 +728,87 @@ const rebacMemoryPlugin = {
       { name: "memory_status" },
     );
 
+    // memory_promote: only available in hybrid mode (separate liminal backend)
+    if (isHybrid) {
+      api.registerTool(
+        (ctx) => ({
+          name: "memory_promote",
+          label: "Promote Memory",
+          description:
+            "Promote memories from recent conversational context (liminal) into the long-term " +
+            "knowledge graph with full ReBAC authorization. Searches the liminal backend and " +
+            "stores matching results into the primary backend.",
+          parameters: Type.Object({
+            query: Type.String({ description: "Search query to find memories to promote" }),
+            groupId: Type.Optional(Type.String({ description: "Target group in the knowledge graph (default: primary default group)" })),
+            limit: Type.Optional(Type.Number({ description: "Max memories to promote (default: 3)" })),
+          }),
+          async execute(_toolCallId, params) {
+            const { query, groupId, limit: promoteLimit = 3 } = params as {
+              query: string;
+              groupId?: string;
+              limit?: number;
+            };
+
+            const subject = resolveSubject(ctx.agentId);
+            const state = getState(ctx.agentId);
+            const targetGroup = groupId ?? backendDefaultGroupId;
+
+            // 1. Search the liminal backend
+            const liminalResults = await searchAuthorizedMemories(liminal, {
+              query,
+              groupIds: [liminalDefaultGroupId],
+              limit: promoteLimit,
+            });
+
+            if (liminalResults.length === 0) {
+              return {
+                content: [{ type: "text", text: "No matching memories found in recent context to promote." }],
+                details: { promoted: 0 },
+              };
+            }
+
+            // 2. Check write access to the target group
+            const canWrite = await canWriteToGroup(spicedb, subject, targetGroup, state.lastWriteToken);
+            if (!canWrite) {
+              return {
+                content: [{ type: "text", text: `Not authorized to write to group "${targetGroup}".` }],
+                details: { promoted: 0, error: "authorization_denied" },
+              };
+            }
+
+            // 3. Store each memory into the primary backend with full SpiceDB auth
+            const promoted: string[] = [];
+            for (const mem of liminalResults) {
+              const storeResult = await backend.store({
+                content: mem.summary,
+                groupId: targetGroup,
+                sourceDescription: `promoted from liminal (${mem.context || mem.type})`,
+              });
+
+              const fragmentId = await storeResult.fragmentId;
+              const writeToken = await writeFragmentRelationships(spicedb, {
+                fragmentId,
+                groupId: targetGroup,
+                sharedBy: subject,
+              });
+              if (writeToken) state.lastWriteToken = writeToken;
+              promoted.push(fragmentId);
+            }
+
+            const summary = `Promoted ${promoted.length} memory/memories from recent context to "${targetGroup}":\n` +
+              liminalResults.map((r, i) => `  ${i + 1}. [${r.type}] ${r.summary.slice(0, 100)}...`).join("\n");
+
+            return {
+              content: [{ type: "text", text: summary }],
+              details: { promoted: promoted.length, fragmentIds: promoted, targetGroup },
+            };
+          },
+        }),
+        { name: "memory_promote" },
+      );
+    }
+
     // ========================================================================
     // CLI Commands
     // ========================================================================
@@ -796,6 +847,40 @@ const rebacMemoryPlugin = {
         if (!event.prompt || event.prompt.length < 5) return;
 
         try {
+          if (isHybrid) {
+            // Hybrid mode: query liminal backend only (no SpiceDB auth).
+            // Graphiti knowledge is accessed on-demand via memory_recall tool.
+            const autoRecallLimit = 8;
+            const liminalResults = await searchAuthorizedMemories(liminal, {
+              query: event.prompt,
+              groupIds: [liminalDefaultGroupId],
+              limit: autoRecallLimit,
+              sessionId: state.sessionId,
+            });
+
+            const toolHint =
+              "<memory-tools>\n" +
+              "You have memory tools:\n" +
+              "- memory_recall: Use this BEFORE saying you don't know or remember something. Search the long-term knowledge graph for facts, preferences, people, decisions.\n" +
+              "- memory_store: Save important new information to the knowledge graph.\n" +
+              "- memory_promote: Promote recent memories into the long-term knowledge graph.\n" +
+              "</memory-tools>";
+
+            if (liminalResults.length === 0) return { prependContext: toolHint };
+
+            const memoryContext = liminalResults
+              .map((r) => `[${r.type}:${r.uuid}] ${r.summary}${r.context ? ` (${r.context})` : ""}`)
+              .join("\n");
+            api.logger.info?.(
+              `openclaw-memory-rebac: injecting ${liminalResults.length} liminal memories`,
+            );
+
+            return {
+              prependContext: `${toolHint}\n\n<recent-context>\nRecent conversational memory:\n${memoryContext}\n</recent-context>`,
+            };
+          }
+
+          // Unified mode: query primary backend via SpiceDB-authorized groups (unchanged)
           const authorizedGroups = await lookupAuthorizedGroups(spicedb, subject, state.lastWriteToken);
 
           const longTermGroups = authorizedGroups.filter((g) => !isSessionGroup(g));
@@ -823,8 +908,8 @@ const rebacMemoryPlugin = {
 
           const toolHint =
             "<memory-tools>\n" +
-            "You have knowledge-graph memory tools. Use them proactively:\n" +
-            "- memory_recall: Search for facts, preferences, people, decisions, or past context. Use this BEFORE saying you don't know or remember something.\n" +
+            "You have memory tools:\n" +
+            "- memory_recall: Use this BEFORE saying you don't know or remember something. Search for facts, preferences, people, decisions.\n" +
             "- memory_store: Save important new information (preferences, decisions, facts about people).\n" +
             "</memory-tools>";
 
@@ -899,6 +984,63 @@ const rebacMemoryPlugin = {
           if (conversationLines.length === 0) return;
 
           const episodeBody = conversationLines.join("\n");
+
+          if (isHybrid) {
+            // Hybrid mode: store to liminal backend only (fire-and-forget, no SpiceDB).
+            // Primary backend (Graphiti) gets data only via explicit memory_store or memory_promote.
+            const liminalGroupId = liminalDefaultGroupId;
+
+            await liminal.store({
+              content: episodeBody,
+              groupId: liminalGroupId,
+              sourceDescription: "auto-captured conversation",
+            });
+
+            // Liminal session enrichment
+            if (liminal.enrichSession && state.sessionId) {
+              const lastUserMsg = [...event.messages]
+                .reverse()
+                .find((m) => (m as Record<string, unknown>).role === "user");
+              const lastAssistMsg = [...event.messages]
+                .reverse()
+                .find((m) => (m as Record<string, unknown>).role === "assistant");
+
+              const extractText = (m: unknown): string => {
+                if (!m || typeof m !== "object") return "";
+                const obj = m as Record<string, unknown>;
+                if (typeof obj.content === "string") return obj.content;
+                if (Array.isArray(obj.content)) {
+                  return obj.content
+                    .filter((b: unknown) =>
+                      typeof b === "object" && b !== null &&
+                      (b as Record<string, unknown>).type === "text",
+                    )
+                    .map((b: unknown) => (b as Record<string, unknown>).text as string)
+                    .join("\n");
+                }
+                return "";
+              };
+
+              const userMsg = stripEnvelopeMetadata(extractText(lastUserMsg));
+              const assistantMsg = extractText(lastAssistMsg);
+
+              if (userMsg && assistantMsg) {
+                liminal.enrichSession({
+                  sessionId: state.sessionId,
+                  groupId: liminalGroupId,
+                  userMsg,
+                  assistantMsg,
+                }).catch(() => {});
+              }
+            }
+
+            api.logger.info(
+              `openclaw-memory-rebac: auto-captured ${conversationLines.length} messages to liminal (${liminalGroupId})`,
+            );
+            return;
+          }
+
+          // Unified mode: store to primary with full SpiceDB write chain
           const targetGroupId = state.sessionId
             ? sessionGroupId(state.sessionId)
             : backendDefaultGroupId;

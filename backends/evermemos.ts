@@ -5,16 +5,12 @@
  * Messages are processed through the MemCell pipeline: boundary detection →
  * parallel LLM extraction of episodic memories, foresight, event logs, and profiles.
  *
- * store() returns immediately with a generated message_id as the fragment anchor.
+ * In the composite plugin architecture, EverMemOS serves as the **liminal** backend:
+ * hook-driven auto-recall and auto-capture with no SpiceDB fragment authorization.
+ * Graphiti remains the primary backend for tool-based operations with full ReBAC.
+ *
+ * store() returns immediately with a generated message_id.
  * With @timeout_to_background(), store may return 202 Accepted for background processing.
- *
- * discoverFragmentIds() polls a custom trace overlay endpoint to resolve the message_id
- * to actual MongoDB ObjectIds of derived memories. These ObjectIds are what search
- * results return, enabling fragment-level SpiceDB authorization (involves, share).
- *
- * resolveAnchors() provides lazy resolution at recall time: if discoverFragmentIds()
- * timed out during store, unresolved anchors can be resolved later when someone
- * actually tries to recall the involved fragments.
  */
 
 import { randomUUID } from "node:crypto";
@@ -93,8 +89,6 @@ export type EverMemOSConfig = {
   retrieveMethod: string;
   memoryTypes: string[];
   defaultSenderId: string;
-  discoveryPollIntervalMs: number;
-  discoveryTimeoutMs: number;
 };
 
 /**
@@ -144,25 +138,10 @@ function extractContent(m: EverMemOSMemory): string {
   }
 }
 
-/** Response from the trace overlay endpoint. */
-type TraceResponse = {
-  message_id: string;
-  status: "complete" | "processing" | "not_found";
-  memcell_ids: string[];
-  derived_memories: Record<string, string[]>;
-  all_ids: string[];
-};
-
 export class EverMemOSBackend implements MemoryBackend {
   readonly name = "evermemos";
 
   private readonly requestTimeoutMs: number;
-
-  /**
-   * Tracks pending stores: messageId → groupId.
-   * Populated by store(), consumed by discoverFragmentIds().
-   */
-  private readonly pendingStores = new Map<string, { groupId: string }>();
 
   constructor(private readonly config: EverMemOSConfig) {
     this.requestTimeoutMs = config.requestTimeoutMs ?? 30000;
@@ -251,11 +230,6 @@ export class EverMemOSBackend implements MemoryBackend {
 
     // EverMemOS processes messages asynchronously through its MemCell pipeline.
     // customPrompt is ignored — EverMemOS handles extraction internally.
-    //
-    // We return our generated message_id as the fragment anchor for SpiceDB.
-    // discoverFragmentIds() will resolve this to actual MongoDB ObjectIds via
-    // the trace overlay endpoint, enabling fragment-level involves/share.
-    this.pendingStores.set(messageId, { groupId: params.groupId });
     return { fragmentId: Promise.resolve(messageId) };
   }
 
@@ -415,72 +389,6 @@ export class EverMemOSBackend implements MemoryBackend {
     } catch {
       return false;
     }
-  }
-
-  // --------------------------------------------------------------------------
-  // Fragment discovery via trace overlay
-  // --------------------------------------------------------------------------
-
-  /**
-   * Poll the trace overlay endpoint to discover MongoDB ObjectIds of derived
-   * memories (episodic, foresight, event_log) produced from a stored message.
-   *
-   * Called by index.ts after store() resolves the fragmentId Promise.
-   * Returns ObjectIds that match what search results return, enabling
-   * fragment-level SpiceDB authorization (involves, share/unshare).
-   */
-  async discoverFragmentIds(messageId: string): Promise<string[]> {
-    const pending = this.pendingStores.get(messageId);
-    if (!pending) return [];
-    this.pendingStores.delete(messageId);
-
-    const pollInterval = this.config.discoveryPollIntervalMs ?? 3000;
-    const timeout = this.config.discoveryTimeoutMs ?? 120000;
-    const maxAttempts = Math.ceil(timeout / pollInterval);
-
-    for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      await new Promise((r) => setTimeout(r, pollInterval));
-
-      try {
-        const trace = await this.restCall<TraceResponse>(
-          "GET",
-          `/api/v1/memories/trace/${encodeURIComponent(messageId)}`,
-        );
-
-        if (trace.status === "not_found") return [];
-        if (trace.status === "complete" && trace.all_ids.length > 0) {
-          return trace.all_ids;
-        }
-        // status === "processing" → keep polling
-      } catch {
-        // Trace endpoint may not be available (older image) — keep trying
-      }
-    }
-
-    return []; // Timeout — fallback writes the messageId anchor to SpiceDB
-  }
-
-  /**
-   * Lazy resolution: resolve unmatched SpiceDB anchor UUIDs to actual
-   * searchable fragment IDs. Called during recall when viewable fragment IDs
-   * from SpiceDB don't match any search results.
-   */
-  async resolveAnchors(anchorIds: string[]): Promise<Map<string, string[]>> {
-    const result = new Map<string, string[]>();
-    for (const anchor of anchorIds) {
-      try {
-        const trace = await this.restCall<TraceResponse>(
-          "GET",
-          `/api/v1/memories/trace/${encodeURIComponent(anchor)}`,
-        );
-        if (trace.status === "complete" && trace.all_ids.length > 0) {
-          result.set(anchor, trace.all_ids);
-        }
-      } catch {
-        // anchor may not be a message_id (e.g. already an ObjectId) — skip
-      }
-    }
-    return result;
   }
 
   // --------------------------------------------------------------------------

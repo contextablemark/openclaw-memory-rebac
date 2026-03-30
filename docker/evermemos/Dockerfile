@@ -116,13 +116,6 @@ COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 # ---------------------------------------------------------------------------
-# Trace overlay: read-only endpoint for message_id → derived memory ObjectIds
-# Same pattern as Graphiti's startup.py overlay — extends our image, not upstream.
-# ---------------------------------------------------------------------------
-COPY trace_overlay.py /app/trace_overlay.py
-RUN echo 'from trace_overlay import router as _trace_router; app.include_router(_trace_router)' >> /app/src/app.py
-
-# ---------------------------------------------------------------------------
 # Healthcheck — verify the EverMemOS API responds
 # ---------------------------------------------------------------------------
 HEALTHCHECK --interval=15s --timeout=10s --retries=10 --start-period=60s \

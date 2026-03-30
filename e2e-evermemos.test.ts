@@ -8,11 +8,8 @@
  * - Memory type mapping (EverMemOS types → SearchResult types)
  * - Context prefix generation for downstream disambiguation
  * - enrichSession → conversation-meta API integration
- * - fragmentId returns UUID anchor for trace-based resolution
- * - discoverFragmentIds resolves anchors → MongoDB ObjectIds via trace overlay
- * - memory_share/unshare flow with discovered ObjectIds
- * - involves-based cross-group recall with post-filter matching
- * - resolveAnchors for lazy resolution of timed-out discoveries
+ * - fragmentId returns UUID anchor (no trace resolution in liminal mode)
+ * - Liminal role: no discoverFragmentIds or resolveAnchors (removed in v0.5.0)
  *
  * Assumes EverMemOS is running on default port 1995 in a Docker container.
  *
@@ -26,11 +23,6 @@ import { EverMemOSBackend } from "./backends/evermemos.js";
 import type { EverMemOSConfig } from "./backends/evermemos.js";
 import {
   ensureGroupMembership,
-  writeFragmentRelationships,
-  lookupViewableFragments,
-  canShareFragment,
-  shareFragment,
-  unshareFragment,
   type Subject,
 } from "./authorization.js";
 
@@ -56,84 +48,8 @@ let testSubject: Subject;
 let testGroup: string;
 let lastWriteToken: string | undefined;
 
-/**
- * Store a message and trigger MemCell boundary detection.
- *
- * EverMemOS creates MemCells only when boundary detection fires. Boundaries
- * trigger when a new message arrives and the gap between the oldest
- * accumulated message's create_time and wall clock time exceeds ~1 day.
- *
- * This helper sends the target message with create_time 2 days in the past,
- * then sends a boundary trigger at current time. The trigger closes the
- * accumulated messages (including our target) into a MemCell.
- *
- * Returns the message_id of the stored message for tracing.
- */
-async function storeAndTriggerBoundary(
-  content: string,
-  groupId: string,
-): Promise<string> {
-  const messageId = `e2e-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  const pastDate = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString();
-  const nowDate = new Date().toISOString();
-
-  // Step 1: Send target message with past create_time → accumulated
-  await fetch(`${EVERMEMOS_ENDPOINT}/api/v1/memories`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      message_id: messageId,
-      create_time: pastDate,
-      sender: "e2e_test_agent",
-      content,
-      group_id: groupId,
-      role: "user",
-      refer_list: [],
-    }),
-  });
-
-  // Step 2: Send boundary trigger at current time → fires boundary detection
-  await fetch(`${EVERMEMOS_ENDPOINT}/api/v1/memories`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      message_id: `boundary-trigger-${Date.now()}`,
-      create_time: nowDate,
-      sender: "e2e_test_agent",
-      content: "Follow-up: confirming the previous discussion items are on track.",
-      group_id: groupId,
-      role: "user",
-      refer_list: [],
-    }),
-  });
-
-  return messageId;
-}
-
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-/**
- * Poll resolveAnchors until the anchor resolves to ObjectIds.
- * Returns the resolved ObjectIds or throws if timeout is reached.
- */
-async function waitForResolution(
-  be: EverMemOSBackend,
-  messageId: string,
-  timeoutMs = 120000,
-  pollMs = 5000,
-): Promise<string[]> {
-  const maxAttempts = Math.ceil(timeoutMs / pollMs);
-  for (let i = 0; i < maxAttempts; i++) {
-    await sleep(pollMs);
-    const resolved = await be.resolveAnchors!([messageId]);
-    if (resolved.size > 0) {
-      const ids = resolved.get(messageId)!;
-      if (ids.length > 0) return ids;
-    }
-  }
-  throw new Error(`Timeout: resolveAnchors did not resolve ${messageId} within ${timeoutMs}ms`);
 }
 
 describe("e2e: EverMemOS integration", () => {
@@ -187,16 +103,6 @@ describe("e2e: EverMemOS integration", () => {
     expect(fragmentId).toMatch(/[0-9a-f-]{36}/);
     // Should resolve quickly (no polling for the anchor itself)
     expect(elapsed).toBeLessThan(5000);
-  });
-
-  // --------------------------------------------------------------------------
-  // discoverFragmentIds: resolves anchors to MongoDB ObjectIds via trace
-  // --------------------------------------------------------------------------
-
-  skipE2E("discoverFragmentIds is implemented", () => {
-    // EverMemOS backend has discoverFragmentIds via the trace overlay endpoint
-    expect(backend.discoverFragmentIds).toBeDefined();
-    expect(typeof backend.discoverFragmentIds).toBe("function");
   });
 
   // --------------------------------------------------------------------------
@@ -330,91 +236,4 @@ describe("e2e: EverMemOS integration", () => {
     expect(fragmentId).toBeTruthy();
   });
 
-  // --------------------------------------------------------------------------
-  // Fragment-level authorization: trace → resolve → share → involves → unshare
-  //
-  // Single MemCell extraction, exercises the full SpiceDB flow:
-  // 1. Store message + trigger boundary → MemCell created
-  // 2. Resolve message_id → MongoDB ObjectIds via trace overlay
-  // 3. Write SpiceDB fragment relationships for each ObjectId
-  // 4. Verify share: storer can share, outsider gains/loses view access
-  // 5. Verify involves: involved person can view, search results match
-  // --------------------------------------------------------------------------
-
-  skipE2E("fragment-level auth: trace → resolve → share → involves → unshare", async () => {
-    const fragGroup = `e2e_frag_${Date.now()}`;
-    await ensureGroupMembership(spicedb, fragGroup, testSubject);
-
-    // --- 1. Store + trigger boundary ---
-    const messageId = await storeAndTriggerBoundary(
-      "Marcus Webb finalized the vendor contract with Apex Solutions. The deal includes a 3-year SLA with quarterly reviews starting in May. Elena Torres proposed a new caching strategy for the recommendation engine.",
-      fragGroup,
-    );
-
-    // --- 2. Resolve message_id → ObjectIds via trace overlay ---
-    const objectIds = await waitForResolution(backend, messageId);
-
-    // ObjectIds should be 24-char hex MongoDB ObjectId format
-    for (const id of objectIds) {
-      expect(id).toMatch(/^[0-9a-f]{24}$/);
-    }
-    // Message UUID should NOT be among the ObjectIds
-    expect(objectIds).not.toContain(messageId);
-
-    // --- 3. Write SpiceDB fragment relationships ---
-    const involvedPerson: Subject = { type: "person", id: `e2e-involved-${Date.now()}` };
-    let writeToken: string | undefined;
-    for (const objId of objectIds) {
-      const wt = await writeFragmentRelationships(spicedb, {
-        fragmentId: objId,
-        groupId: fragGroup,
-        sharedBy: testSubject,
-        involves: [involvedPerson],
-      });
-      if (wt) writeToken = wt;
-    }
-
-    const firstObjId = objectIds[0];
-
-    // --- 4. Share flow ---
-    // Storer can share
-    const canShare = await canShareFragment(spicedb, testSubject, firstObjId, writeToken);
-    expect(canShare).toBe(true);
-
-    // Share with an outsider
-    const outsider: Subject = { type: "person", id: `e2e-outsider-${Date.now()}` };
-    const shareToken = await shareFragment(spicedb, firstObjId, [outsider]);
-
-    // Outsider can now view
-    let viewable = await lookupViewableFragments(spicedb, outsider, shareToken);
-    expect(viewable).toContain(firstObjId);
-
-    // Unshare — outsider loses access
-    await unshareFragment(spicedb, firstObjId, [outsider]);
-    viewable = await lookupViewableFragments(spicedb, outsider);
-    expect(viewable).not.toContain(firstObjId);
-
-    // --- 5. Involves flow ---
-    // Involved person can view all ObjectIds
-    const involvedViewable = await lookupViewableFragments(spicedb, involvedPerson, writeToken);
-    for (const objId of objectIds) {
-      expect(involvedViewable).toContain(objId);
-    }
-
-    // Search results contain discovered ObjectIds
-    const searchResults = await backend.searchGroup({
-      query: "vendor contract caching strategy",
-      groupId: fragGroup,
-      limit: 20,
-    });
-
-    const searchIds = new Set(searchResults.map((r) => r.uuid));
-    const matchingIds = objectIds.filter((id) => searchIds.has(id));
-    expect(matchingIds.length).toBeGreaterThan(0);
-
-    // Post-filter: viewable set intersects with search results
-    const viewableSet = new Set(involvedViewable);
-    const postFiltered = searchResults.filter((r) => viewableSet.has(r.uuid));
-    expect(postFiltered.length).toBeGreaterThan(0);
-  }, 600000);
 });

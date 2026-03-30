@@ -16,12 +16,18 @@ import pluginDefaults from "./plugin.defaults.json" with { type: "json" };
 
 export type RebacMemoryConfig = {
   backend: string;
+  /** Liminal backend name for hook-driven auto-recall/capture. Defaults to `backend`. */
+  liminal: string;
+  /** True when liminal differs from backend (hybrid mode: separate backends for hooks vs tools). */
+  isHybrid: boolean;
   spicedb: {
     endpoint: string;
     token: string;
     insecure: boolean;
   };
   backendConfig: Record<string, unknown>;
+  /** Liminal backend config (same as backendConfig when unified, separate in hybrid mode). */
+  liminalConfig: Record<string, unknown>;
   subjectType: "agent" | "person";
   subjectId: string;
   /** Maps agent IDs to their owner person IDs (e.g., Slack user IDs). */
@@ -89,26 +95,42 @@ export const rebacMemoryConfigSchema = {
     const entry = backendRegistry[backendName];
     if (!entry) throw new Error(`Unknown backend: "${backendName}"`);
 
-    // Top-level allowed keys: shared keys + the backend name key
-    assertAllowedKeys(
-      cfg,
-      [
-        "backend", "spicedb",
-        "subjectType", "subjectId", "identities", "groupOwners",
-        "autoCapture", "autoRecall", "maxCaptureMessages", "sessionFilter",
-        backendName,
-      ],
-      "openclaw-memory-rebac config",
-    );
+    // Liminal backend: defaults to the primary backend (unified mode).
+    // Set to a different backend name for hybrid mode (e.g., "evermemos").
+    const liminalName =
+      typeof cfg.liminal === "string" ? cfg.liminal : backendName;
+    const liminalEntry = backendRegistry[liminalName];
+    if (!liminalEntry) throw new Error(`Unknown liminal backend: "${liminalName}"`);
+    const isHybrid = liminalName !== backendName;
+
+    // Top-level allowed keys: shared keys + backend name keys
+    const allowedKeys = [
+      "backend", "liminal", "spicedb",
+      "subjectType", "subjectId", "identities", "groupOwners",
+      "autoCapture", "autoRecall", "maxCaptureMessages", "sessionFilter",
+      backendName,
+    ];
+    if (isHybrid) allowedKeys.push(liminalName);
+    assertAllowedKeys(cfg, allowedKeys, "openclaw-memory-rebac config");
 
     // SpiceDB config (shared)
     const spicedb = (cfg.spicedb as Record<string, unknown>) ?? {};
     assertAllowedKeys(spicedb, ["endpoint", "token", "insecure"], "spicedb config");
 
-    // Backend config: user overrides merged over JSON defaults
+    // Primary backend config: user overrides merged over JSON defaults
     const backendRaw = (cfg[backendName] as Record<string, unknown>) ?? {};
     assertAllowedKeys(backendRaw, Object.keys(entry.defaults), `${backendName} config`);
     const backendConfig = { ...entry.defaults, ...backendRaw };
+
+    // Liminal backend config: same as primary in unified mode, separate in hybrid
+    let liminalConfig: Record<string, unknown>;
+    if (isHybrid) {
+      const liminalRaw = (cfg[liminalName] as Record<string, unknown>) ?? {};
+      assertAllowedKeys(liminalRaw, Object.keys(liminalEntry.defaults), `${liminalName} config`);
+      liminalConfig = { ...liminalEntry.defaults, ...liminalRaw };
+    } else {
+      liminalConfig = backendConfig;
+    }
 
     const subjectType =
       cfg.subjectType === "person" ? "person" : (pluginDefaults.subjectType as "agent" | "person");
@@ -141,6 +163,8 @@ export const rebacMemoryConfigSchema = {
 
     return {
       backend: backendName,
+      liminal: liminalName,
+      isHybrid,
       spicedb: {
         endpoint:
           typeof spicedb.endpoint === "string"
@@ -153,6 +177,7 @@ export const rebacMemoryConfigSchema = {
             : pluginDefaults.spicedb.insecure,
       },
       backendConfig,
+      liminalConfig,
       subjectType,
       subjectId,
       identities,
@@ -173,13 +198,24 @@ export const rebacMemoryConfigSchema = {
 // ============================================================================
 
 /**
- * Instantiate the configured MemoryBackend from the parsed config.
+ * Instantiate the primary MemoryBackend (used for tools + SpiceDB auth).
  * Call this once during plugin registration — the returned backend is stateful.
  */
 export function createBackend(cfg: RebacMemoryConfig): MemoryBackend {
   const entry = backendRegistry[cfg.backend];
   if (!entry) throw new Error(`Unknown backend: "${cfg.backend}"`);
   return entry.create(cfg.backendConfig);
+}
+
+/**
+ * Instantiate the liminal MemoryBackend (used for hook-driven auto-recall/capture).
+ * In unified mode (liminal === backend), callers should reuse the primary instance.
+ * In hybrid mode, this creates a separate instance from the liminal backend's config.
+ */
+export function createLiminalBackend(cfg: RebacMemoryConfig): MemoryBackend {
+  const entry = backendRegistry[cfg.liminal];
+  if (!entry) throw new Error(`Unknown liminal backend: "${cfg.liminal}"`);
+  return entry.create(cfg.liminalConfig);
 }
 
 /**

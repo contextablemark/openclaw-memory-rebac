@@ -1,65 +1,60 @@
 # @contextableai/openclaw-memory-rebac
 
-Two-layer memory plugin for OpenClaw: **SpiceDB** for authorization, **pluggable backends** for knowledge storage.
+Composite memory plugin for OpenClaw: **Graphiti** knowledge graph (primary) with optional **EverMemOS** liminal memory, authorized by **SpiceDB** ReBAC.
 
-Agents remember conversations as structured knowledge. SpiceDB enforces who can read and write which memories — authorization lives at the data layer, not in prompts. The backend is swappable: start with Graphiti's knowledge graph today, add new storage engines tomorrow.
+Agents remember conversations as structured knowledge. SpiceDB enforces who can read and write which memories — authorization lives at the data layer, not in prompts. Two operating modes: **unified** (Graphiti handles everything) or **hybrid** (Graphiti for tools, EverMemOS for conversational hooks, with a promotion bridge).
 
 ## Architecture
 
 ```
-┌──────────────────────────────────────────────────┐
-│                    OpenClaw Agent                 │
-│                                                  │
-│  memory_recall ──► SpiceDB ──► Backend Search    │
-│  memory_store  ──► SpiceDB ──► Backend Write     │
-│  memory_forget ──► SpiceDB ──► Backend Delete    │
-│  auto-recall   ──► SpiceDB ──► Backend Search    │
-│  auto-capture  ──► SpiceDB ──► Backend Write     │
-└──────────────────────────────────────────────────┘
-         │                           │
-    ┌────▼────┐                ┌─────▼─────┐
-    │ SpiceDB │                │  Backend   │
-    │ (authz) │                │ (storage)  │
-    └─────────┘                └───────────┘
+Unified mode (default):
+  Tools + hooks → Graphiti → SpiceDB auth on all fragments.
+
+Hybrid mode (liminal: "evermemos"):
+  ├── Tools → Graphiti (primary, ReBAC authorized)
+  │   ├── memory_recall, memory_store, memory_forget
+  │   ├── memory_share / unshare
+  │   └── memory_promote (reads EverMemOS, writes Graphiti)
+  ├── Hooks → EverMemOS only (liminal)
+  │   ├── before_agent_start → EverMemOS auto-recall (recent context)
+  │   └── agent_end → EverMemOS auto-capture (no SpiceDB writes)
+  └── SpiceDB (Graphiti fragments only)
 ```
 
-**SpiceDB** determines which `group_id`s a subject (agent or person) can access. The **backend** stores and searches memories scoped to those groups. Authorization is enforced before any read or write reaches the backend.
+**SpiceDB** determines which `group_id`s a subject (agent or person) can access. The **primary backend** (Graphiti) stores and searches memories scoped to those groups. In hybrid mode, the **liminal backend** (EverMemOS) handles conversational auto-recall and auto-capture without SpiceDB authorization — important memories are promoted to Graphiti via the `memory_promote` tool.
 
-### Why Two Layers?
+### Why This Design?
 
-Most memory systems bundle authorization with storage — you get dataset isolation, but it's tied to the storage engine's auth model. That creates conflicts when you need external authorization (like SpiceDB) or want to swap backends without re-implementing access control.
-
-openclaw-memory-rebac separates these concerns:
+Most memory systems bundle authorization with storage. openclaw-memory-rebac separates these concerns:
 - **SpiceDB** owns the authorization model (relationships, permissions, consistency)
-- **Backends** own the storage model (indexing, search, extraction)
-- The plugin orchestrates both — authorization check first, then backend operation
+- **Graphiti** owns the curated knowledge graph (entities, facts, structured retrieval)
+- **EverMemOS** (optional) owns conversational context (episodic memory, foresight, profiles)
+- The plugin orchestrates all three — routing tools to Graphiti with SpiceDB authorization, and hooks to the liminal backend
 
-This means you can change your storage engine without touching authorization, and vice versa.
+In unified mode, Graphiti handles everything (same as a single-backend plugin). In hybrid mode, EverMemOS captures conversational context automatically while Graphiti remains the authoritative knowledge store accessed via tools.
 
 ## Backends
 
-### Graphiti (default)
+### Graphiti (primary)
 
-[Graphiti](https://github.com/getzep/graphiti) builds a knowledge graph from conversations. It extracts entities, facts, and relationships, storing them in Neo4j for structured retrieval.
+[Graphiti](https://github.com/getzep/graphiti) builds a knowledge graph from conversations. It extracts entities, facts, and relationships, storing them in Neo4j for structured retrieval. Always serves as the primary backend for tools and SpiceDB-authorized operations.
 
 - **Storage**: Neo4j graph database
 - **Transport**: Direct REST API to Graphiti FastAPI server
 - **Extraction**: LLM-powered entity and relationship extraction (~300 embedding calls per episode)
 - **Search**: Dual-mode — searches both nodes (entities) and facts (relationships) in parallel
 - **Docker image**: Custom image (`docker/graphiti/`) with per-component LLM/embedder/reranker configuration, BGE reranker support, and runtime patches for local-model compatibility
-- **Best for**: Rich entity-relationship extraction, structured knowledge
 
-### EverMemOS
+### EverMemOS (liminal)
 
-[EverMemOS](https://github.com/EverMind-AI/EverMemOS) is a memory system with MemCell boundary detection and parallel LLM extraction. It produces richer memory types — episodic memories, user profiles, foresight (predictions), and event logs.
+[EverMemOS](https://github.com/EverMind-AI/EverMemOS) is a conversational memory system with MemCell boundary detection and parallel LLM extraction. In hybrid mode, it serves as the **liminal backend** — handling auto-recall and auto-capture hooks without SpiceDB authorization.
 
 - **Storage**: MongoDB + Milvus (vector) + Elasticsearch (keyword)
 - **Transport**: REST API to EverMemOS FastAPI server (port 1995)
-- **Extraction**: MemCell pipeline — automatic boundary detection, then parallel LLM extraction of multiple memory types
+- **Extraction**: MemCell pipeline — automatic boundary detection, then parallel LLM extraction of episodic memories, profiles, foresight, and event logs
 - **Search**: Hybrid (vector + keyword + reranking), configurable via `retrieveMethod`
 - **Docker image**: Built from source (`docker/evermemos/Dockerfile`), pinned to upstream release tag (v1.1.0)
-- **Best for**: Rich memory type diversity, foresight extraction, hybrid search
-- **Limitation**: No `involves` at ingestion — use `memory_share` for post-hoc cross-group sharing
+- **Role**: Liminal only — not used for tool-based operations. Important memories are promoted to Graphiti via `memory_promote`.
 
 #### EverMemOS-specific config
 
@@ -92,7 +87,7 @@ Then restart the gateway. On first start, the plugin automatically:
 
 ### 1. Start Infrastructure
 
-**Option A: Graphiti backend (default)**
+**Unified mode (Graphiti only — default)**
 
 ```bash
 cd docker
@@ -103,20 +98,23 @@ docker compose -f docker-compose.graphiti.yml up -d
 
 This starts: Neo4j (7687), Graphiti (8000), PostgreSQL (5432), SpiceDB (50051).
 
-**Option B: EverMemOS backend**
+**Hybrid mode (Graphiti + EverMemOS)**
 
 ```bash
+# Start Graphiti stack
+cd docker
+cp graphiti/.env.example graphiti/.env
+docker compose -f docker-compose.graphiti.yml up -d
+
+# Start EverMemOS stack (shares SpiceDB)
 cd docker/evermemos
 cp .env.example .env
 # Edit .env — set LLM_API_KEY, VECTORIZE_API_KEY, RERANK_API_KEY
-
-cd docker
+cd ..
 docker compose -f docker-compose.evermemos.yml up -d
 ```
 
-This starts: EverMemOS all-in-one container (1995), PostgreSQL (5432), SpiceDB (50051). First run builds the image from source (~5 min).
-
-Both options share the same SpiceDB instance with the same authorization schema.
+This starts both stacks. EverMemOS first run builds from source (~5 min). Both share the same SpiceDB instance.
 
 ### 2. Restart the Gateway
 
@@ -135,7 +133,7 @@ rebac-mem add-member family dad --type person
 
 ## Tools
 
-The plugin registers four tools available to the agent:
+The plugin registers the following tools (plus `memory_promote` in hybrid mode):
 
 ### memory_recall
 
@@ -177,24 +175,39 @@ Delete a memory fragment. Requires `delete` permission (only the subject who sto
 
 Check the health of the backend and SpiceDB services. No parameters.
 
+### memory_promote (hybrid mode only)
+
+Promote memories from the liminal backend (EverMemOS) into the primary knowledge graph (Graphiti) with full SpiceDB authorization.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `query` | string | *required* | Search query to find memories to promote |
+| `groupId` | string | configured default | Target group in the knowledge graph |
+| `limit` | number | 3 | Max memories to promote |
+
+Searches EverMemOS for matching memories, stores each into Graphiti, and writes SpiceDB fragment relationships. This bridges short-term conversational context into the long-term authorized knowledge graph.
+
 ## Automatic Behaviors
 
 ### Auto-Recall
 
-When enabled (default: `true`), the plugin searches relevant memories before each agent turn and injects them into the conversation context as `<relevant-memories>` blocks.
+When enabled (default: `true`), the plugin searches relevant memories before each agent turn and injects them into context.
 
-- Searches up to 5 long-term memories and 3 session memories per turn
-- Deduplicates session results against long-term results
-- Only triggers when the user prompt is at least 5 characters
+**Unified mode**: Searches Graphiti via SpiceDB-authorized groups. Injects as `<relevant-memories>` blocks. Searches up to 5 long-term and 3 session memories per turn, deduplicates session results against long-term.
+
+**Hybrid mode**: Searches EverMemOS only (no SpiceDB). Injects as `<recent-context>` blocks. The agent accesses Graphiti knowledge on-demand via the `memory_recall` tool.
+
+Both modes only trigger when the user prompt is at least 5 characters.
 
 ### Auto-Capture
 
-When enabled (default: `true`), the plugin captures the last N messages from each completed agent turn and stores them as a batch episode.
+When enabled (default: `true`), the plugin captures the last N messages from each completed agent turn.
 
-- Captures up to `maxCaptureMessages` messages (default: 10)
-- Stores to the current session group by default
-- Skips messages shorter than 5 characters and injected context blocks
-- Uses custom extraction instructions for entity/fact extraction
+**Unified mode**: Stores to Graphiti with full SpiceDB fragment authorization. Uses custom extraction instructions.
+
+**Hybrid mode**: Stores to EverMemOS only (fire-and-forget, no SpiceDB writes). EverMemOS handles extraction internally via its MemCell pipeline. Important memories are promoted to Graphiti via `memory_promote`.
+
+Both modes capture up to `maxCaptureMessages` messages (default: 10), skip messages shorter than 5 characters, and skip injected context blocks.
 
 ### Session Filtering
 
@@ -308,7 +321,8 @@ Agents without an `identities` entry (like service agents) are not linked to any
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `backend` | string | `graphiti` | Storage backend (`graphiti`) |
+| `backend` | string | `graphiti` | Primary backend for tools and SpiceDB-authorized operations |
+| `liminal` | string | *(same as backend)* | Liminal backend for auto-recall/capture hooks. Set to `"evermemos"` for hybrid mode |
 | `spicedb.endpoint` | string | `localhost:50051` | SpiceDB gRPC endpoint |
 | `spicedb.token` | string | *required* | SpiceDB pre-shared key (supports `${ENV_VAR}`) |
 | `spicedb.insecure` | boolean | `true` | Allow insecure gRPC (for localhost dev) |
@@ -417,36 +431,47 @@ npx tsx bin/rebac-mem.ts status
 
 OpenClaw has an exclusive `memory` slot — only one memory plugin is active at a time:
 
+**Unified mode** (Graphiti only):
+
 ```json
 {
   "plugins": {
-    "slots": {
-      "memory": "openclaw-memory-rebac"
-    },
+    "slots": { "memory": "openclaw-memory-rebac" },
     "entries": {
       "openclaw-memory-rebac": {
         "enabled": true,
         "config": {
           "backend": "graphiti",
-          "spicedb": {
-            "endpoint": "localhost:50051",
-            "token": "dev_token",
-            "insecure": true
-          },
-          "graphiti": {
-            "endpoint": "http://localhost:8000",
-            "defaultGroupId": "main"
-          },
+          "spicedb": { "endpoint": "localhost:50051", "token": "dev_token", "insecure": true },
+          "graphiti": { "endpoint": "http://localhost:8000", "defaultGroupId": "main" },
           "subjectType": "agent",
           "subjectId": "my-agent",
-          "identities": {
-            "my-agent": "U0123ABC"
-          },
-          "autoCapture": true,
-          "autoRecall": true,
-          "sessionFilter": {
-            "excludePatterns": ["cron"]
-          }
+          "identities": { "my-agent": "U0123ABC" }
+        }
+      }
+    }
+  }
+}
+```
+
+**Hybrid mode** (Graphiti + EverMemOS):
+
+```json
+{
+  "plugins": {
+    "slots": { "memory": "openclaw-memory-rebac" },
+    "entries": {
+      "openclaw-memory-rebac": {
+        "enabled": true,
+        "config": {
+          "backend": "graphiti",
+          "liminal": "evermemos",
+          "spicedb": { "endpoint": "localhost:50051", "token": "dev_token", "insecure": true },
+          "graphiti": { "endpoint": "http://localhost:8000", "defaultGroupId": "main" },
+          "evermemos": { "endpoint": "http://localhost:1995" },
+          "subjectType": "agent",
+          "subjectId": "my-agent",
+          "identities": { "my-agent": "U0123ABC" }
         }
       }
     }
@@ -479,17 +504,17 @@ rebac-mem import --include-sessions
 
 ## Docker Compose
 
-The `docker/` directory contains modular Docker Compose stacks. Two top-level compose files select which memory backend to pair with SpiceDB:
+The `docker/` directory contains modular Docker Compose stacks:
 
 ```bash
-# Graphiti + SpiceDB
+# Unified mode: Graphiti + SpiceDB
 cd docker && docker compose -f docker-compose.graphiti.yml up -d
 
-# EverMemOS + SpiceDB
+# Hybrid mode: add EverMemOS (shares SpiceDB with Graphiti stack)
 cd docker && docker compose -f docker-compose.evermemos.yml up -d
 ```
 
-Both share the same SpiceDB sub-stack — same authorization schema, same permissions model.
+Both stacks share the same SpiceDB sub-stack — same authorization schema, same permissions model.
 
 ### Graphiti Stack (`docker/graphiti/`)
 
@@ -556,9 +581,9 @@ OPENCLAW_LIVE_TEST=1 npm run test:e2e
 ### Project Structure
 
 ```
-├── index.ts                  # Plugin entry: tools, hooks, CLI, service
-├── backend.ts                # MemoryBackend interface (all backends implement this)
-├── config.ts                 # Config schema, validation, backend factory
+├── index.ts                  # Plugin entry: tools, hooks, composite routing
+├── backend.ts                # MemoryBackend interface
+├── config.ts                 # Config schema, validation, backend + liminal factory
 ├── cli.ts                    # Shared CLI commands (plugin + standalone)
 ├── search.ts                 # Multi-group parallel search, dedup, formatting
 ├── authorization.ts          # Authorization logic (SpiceDB operations)
@@ -589,7 +614,7 @@ OPENCLAW_LIVE_TEST=1 npm run test:e2e
 │   │   └── .env.example       # LLM, vectorize, rerank API keys
 │   └── spicedb/
 │       └── docker-compose.yml
-├── *.test.ts                 # Unit tests (178)
+├── *.test.ts                 # Unit tests (186)
 ├── e2e.test.ts               # Graphiti E2E tests (14, live services)
 ├── e2e-backend.test.ts       # Backend-agnostic E2E contract (13)
 ├── e2e-evermemos.test.ts     # EverMemOS-specific E2E (7)

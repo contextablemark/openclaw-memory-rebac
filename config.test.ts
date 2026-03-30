@@ -1,6 +1,7 @@
 import { describe, test, expect } from "vitest";
-import { rebacMemoryConfigSchema, createBackend, defaultGroupId } from "./config.js";
+import { rebacMemoryConfigSchema, createBackend, createLiminalBackend, defaultGroupId } from "./config.js";
 import { GraphitiBackend } from "./backends/graphiti.js";
+import { EverMemOSBackend } from "./backends/evermemos.js";
 
 describe("rebacMemoryConfigSchema", () => {
   test("parses minimal config with defaults", () => {
@@ -171,6 +172,49 @@ describe("rebacMemoryConfigSchema", () => {
     const cfg = rebacMemoryConfigSchema.parse({});
     expect(cfg.sessionFilter).toBeUndefined();
   });
+
+  test("defaults liminal to backend (unified mode)", () => {
+    const cfg = rebacMemoryConfigSchema.parse({});
+    expect(cfg.liminal).toBe("graphiti");
+    expect(cfg.isHybrid).toBe(false);
+    expect(cfg.liminalConfig).toBe(cfg.backendConfig);
+  });
+
+  test("parses hybrid mode with liminal: evermemos", () => {
+    const cfg = rebacMemoryConfigSchema.parse({
+      backend: "graphiti",
+      liminal: "evermemos",
+      evermemos: { endpoint: "http://localhost:1995" },
+    });
+    expect(cfg.backend).toBe("graphiti");
+    expect(cfg.liminal).toBe("evermemos");
+    expect(cfg.isHybrid).toBe(true);
+    expect(cfg.backendConfig["endpoint"]).toBe("http://localhost:8000"); // graphiti
+    expect(cfg.liminalConfig["endpoint"]).toBe("http://localhost:1995"); // evermemos
+  });
+
+  test("hybrid mode allows both backend name keys at top level", () => {
+    const cfg = rebacMemoryConfigSchema.parse({
+      backend: "graphiti",
+      liminal: "evermemos",
+      graphiti: { endpoint: "http://graphiti:9000" },
+      evermemos: { endpoint: "http://evermemos:1995" },
+    });
+    expect(cfg.backendConfig["endpoint"]).toBe("http://graphiti:9000");
+    expect(cfg.liminalConfig["endpoint"]).toBe("http://evermemos:1995");
+  });
+
+  test("throws on unknown liminal backend", () => {
+    expect(() =>
+      rebacMemoryConfigSchema.parse({ liminal: "nonexistent" }),
+    ).toThrow('Unknown liminal backend: "nonexistent"');
+  });
+
+  test("rejects evermemos config key without liminal in unified mode", () => {
+    expect(() =>
+      rebacMemoryConfigSchema.parse({ backend: "graphiti", evermemos: {} }),
+    ).toThrow("has unknown keys: evermemos");
+  });
 });
 
 describe("createBackend", () => {
@@ -197,6 +241,25 @@ describe("createBackend", () => {
     // Simulate missing backendConfig by using an unregistered backend name
     const badCfg = { ...cfg, backend: "nonexistent" };
     expect(() => createBackend(badCfg)).toThrow(`Unknown backend: "nonexistent"`);
+  });
+});
+
+describe("createLiminalBackend", () => {
+  test("creates EverMemOSBackend in hybrid mode", () => {
+    const cfg = rebacMemoryConfigSchema.parse({
+      backend: "graphiti",
+      liminal: "evermemos",
+      evermemos: { endpoint: "http://localhost:1995" },
+    });
+    const lim = createLiminalBackend(cfg);
+    expect(lim).toBeInstanceOf(EverMemOSBackend);
+    expect(lim.name).toBe("evermemos");
+  });
+
+  test("creates GraphitiBackend in unified mode", () => {
+    const cfg = rebacMemoryConfigSchema.parse({});
+    const lim = createLiminalBackend(cfg);
+    expect(lim).toBeInstanceOf(GraphitiBackend);
   });
 });
 

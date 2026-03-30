@@ -1,10 +1,10 @@
 # Configuration Guide
 
-This guide walks through setting up openclaw-memory-rebac with either the Graphiti or EverMemOS backend, from infrastructure to production-ready configuration.
+This guide walks through setting up openclaw-memory-rebac in unified mode (Graphiti only) or hybrid mode (Graphiti + EverMemOS liminal), from infrastructure to production-ready configuration.
 
 ## Quick Start
 
-### Graphiti Backend
+### Unified Mode (Graphiti only — default)
 
 ```bash
 # 1. Start full infrastructure (Graphiti + SpiceDB)
@@ -21,26 +21,31 @@ npm run cli -- schema-write
 npm run cli -- status
 ```
 
-### EverMemOS Backend
+### Hybrid Mode (Graphiti + EverMemOS)
 
 ```bash
-# 1. Configure API keys (LLM, vectorize, rerank)
+# 1. Start Graphiti + SpiceDB
+cd docker
+docker compose -f docker-compose.graphiti.yml up -d
+
+# 2. Configure EverMemOS API keys
 cd docker/evermemos
 cp .env.example .env
 # Edit .env — set LLM_API_KEY, VECTORIZE_API_KEY, RERANK_API_KEY
 
-# 2. Start full infrastructure (EverMemOS + SpiceDB)
+# 3. Start EverMemOS (shares SpiceDB with Graphiti stack)
 cd docker
 docker compose -f docker-compose.evermemos.yml up -d   # builds image on first run (~5 min)
 
-# 3. Verify services are healthy (allow ~60s for internal services to start)
+# 4. Verify services are healthy
+docker compose -f docker-compose.graphiti.yml ps
 docker compose -f docker-compose.evermemos.yml ps
 
-# 4. Write the SpiceDB authorization schema
+# 5. Write the SpiceDB authorization schema
 npm run cli -- schema-write
 
-# 5. Check connectivity
-REBAC_MEM_BACKEND=evermemos npm run cli -- status
+# 6. Check connectivity
+npm run cli -- status
 ```
 
 Then add the plugin to your OpenClaw config (`~/.openclaw/openclaw.json`) and restart the gateway.
@@ -79,9 +84,9 @@ cd docker/spicedb && docker compose up -d
 
 SpiceDB migrations run automatically via the `spicedb-migrate` service.
 
-### EverMemOS Stack
+### EverMemOS Stack (for hybrid mode)
 
-The `docker/docker-compose.evermemos.yml` orchestrates the EverMemOS stack via two sub-stacks:
+The `docker/docker-compose.evermemos.yml` orchestrates the EverMemOS liminal backend:
 
 **EverMemOS all-in-one** (`docker/evermemos/`):
 
@@ -188,40 +193,25 @@ If you prefer to run services outside Docker:
 
 ### OpenClaw Config (`~/.openclaw/openclaw.json`)
 
-Add the plugin to your OpenClaw configuration:
+Add the plugin to your OpenClaw configuration.
+
+**Unified mode** (Graphiti handles tools + hooks):
 
 ```json
 {
   "plugins": {
-    "load": {
-      "paths": [
-        "/path/to/openclaw-memory-rebac"
-      ]
-    },
-    "slots": {
-      "memory": "openclaw-memory-rebac"
-    },
+    "load": { "paths": ["/path/to/openclaw-memory-rebac"] },
+    "slots": { "memory": "openclaw-memory-rebac" },
     "entries": {
       "openclaw-memory-rebac": {
         "enabled": true,
         "config": {
           "backend": "graphiti",
-          "spicedb": {
-            "endpoint": "localhost:50051",
-            "token": "dev_token",
-            "insecure": true
-          },
-          "graphiti": {
-            "endpoint": "http://localhost:8000",
-            "defaultGroupId": "main"
-          },
+          "spicedb": { "endpoint": "localhost:50051", "token": "dev_token", "insecure": true },
+          "graphiti": { "endpoint": "http://localhost:8000", "defaultGroupId": "main" },
           "subjectType": "agent",
           "subjectId": "my-agent",
-          "identities": {
-            "my-agent": "U0123ABC"
-          },
-          "autoCapture": true,
-          "autoRecall": true
+          "identities": { "my-agent": "U0123ABC" }
         }
       }
     }
@@ -229,37 +219,33 @@ Add the plugin to your OpenClaw configuration:
 }
 ```
 
-For EverMemOS, use `"backend": "evermemos"` and add an `evermemos` block:
+**Hybrid mode** (Graphiti for tools, EverMemOS for conversational hooks):
 
 ```json
 {
   "plugins": {
+    "load": { "paths": ["/path/to/openclaw-memory-rebac"] },
+    "slots": { "memory": "openclaw-memory-rebac" },
     "entries": {
       "openclaw-memory-rebac": {
         "enabled": true,
         "config": {
-          "backend": "evermemos",
-          "spicedb": {
-            "endpoint": "localhost:50051",
-            "token": "dev_token",
-            "insecure": true
-          },
-          "evermemos": {
-            "endpoint": "http://localhost:1995",
-            "defaultGroupId": "main",
-            "retrieveMethod": "hybrid",
-            "memoryTypes": ["episodic_memory", "profile", "foresight", "event_log"]
-          },
+          "backend": "graphiti",
+          "liminal": "evermemos",
+          "spicedb": { "endpoint": "localhost:50051", "token": "dev_token", "insecure": true },
+          "graphiti": { "endpoint": "http://localhost:8000", "defaultGroupId": "main" },
+          "evermemos": { "endpoint": "http://localhost:1995", "retrieveMethod": "hybrid" },
           "subjectType": "agent",
           "subjectId": "my-agent",
-          "autoCapture": true,
-          "autoRecall": true
+          "identities": { "my-agent": "U0123ABC" }
         }
       }
     }
   }
 }
 ```
+
+In hybrid mode, `memory_promote` is automatically registered as an additional tool, letting the agent promote important conversational context from EverMemOS into Graphiti's authorized knowledge graph.
 
 ### Config Reference
 
@@ -267,7 +253,8 @@ For EverMemOS, use `"backend": "evermemos"` and add an `evermemos` block:
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `backend` | `"graphiti"` \| `"evermemos"` | `"graphiti"` | Storage backend |
+| `backend` | `"graphiti"` | `"graphiti"` | Primary backend for tools and SpiceDB-authorized operations |
+| `liminal` | `"graphiti"` \| `"evermemos"` | *(same as backend)* | Liminal backend for auto-recall/capture hooks. Set to `"evermemos"` for hybrid mode |
 | `subjectType` | `"agent"` \| `"person"` | `"agent"` | SpiceDB subject type for the current user |
 | `subjectId` | string | `"default"` | Fallback SpiceDB subject ID when agentId is unavailable (supports `${ENV_VAR}`) |
 | `identities` | `Record<string, string>` | `{}` | Maps agent IDs to owner person IDs for cross-agent recall |
@@ -556,7 +543,7 @@ The standalone CLI reads configuration from (highest priority first):
    - `~/.config/rebac-mem/config.json` (user config)
 3. **Built-in defaults**
 
-Example `rebac-mem.config.json`:
+Example `rebac-mem.config.json` (unified mode):
 
 ```json
 {
@@ -570,6 +557,20 @@ Example `rebac-mem.config.json`:
     "endpoint": "http://localhost:8000",
     "defaultGroupId": "main"
   },
+  "subjectType": "agent",
+  "subjectId": "test-agent"
+}
+```
+
+For hybrid mode, add `liminal` and `evermemos`:
+
+```json
+{
+  "backend": "graphiti",
+  "liminal": "evermemos",
+  "spicedb": { "endpoint": "localhost:50051", "token": "dev_token", "insecure": true },
+  "graphiti": { "endpoint": "http://localhost:8000", "defaultGroupId": "main" },
+  "evermemos": { "endpoint": "http://localhost:1995" },
   "subjectType": "agent",
   "subjectId": "test-agent"
 }

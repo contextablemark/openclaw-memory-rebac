@@ -37,14 +37,11 @@ export type SearchResult = {
  * Returned by store(). The fragmentId resolves to the UUID that will be
  * registered in SpiceDB.
  *
- * - Graphiti: Resolves once the server has processed the episode (polled in the background).
- * - EverMemOS: Resolves immediately to our generated message_id UUID. This anchor is used
- *   for share/involves SpiceDB relationships. Note: search result IDs (MongoDB ObjectIds)
- *   differ from this anchor, so involves-based cross-group recall post-filtering won't
- *   match — group-level access handles the common path.
+ * Graphiti: Resolves once the server has processed the episode (polled in the background).
+ * EverMemOS (liminal mode): Resolves immediately to a generated message_id UUID.
  *
  * index.ts chains SpiceDB writeFragmentRelationships() to this Promise,
- * so it always fires at the right time.
+ * so it always fires at the right time (primary/unified mode only).
  */
 export type StoreResult = {
   fragmentId: Promise<string>;
@@ -187,21 +184,6 @@ export interface MemoryBackend {
    * Optional: not all backends separate episodes from fragments.
    */
   discoverFragmentIds?(episodeId: string): Promise<string[]>;
-
-  /**
-   * Resolve anchor IDs (e.g. message UUIDs written to SpiceDB during store)
-   * to actual searchable fragment IDs (e.g. MongoDB ObjectIds).
-   *
-   * Called during recall when viewable fragment IDs from SpiceDB don't match
-   * any search results — indicates the anchors were written before extraction
-   * completed (discoverFragmentIds timed out).
-   *
-   * Returns a Map of anchor → resolved fragment IDs. Only anchors that
-   * successfully resolved are included; unresolvable anchors are omitted.
-   *
-   * Optional: backends where store IDs match search IDs don't need this.
-   */
-  resolveAnchors?(anchorIds: string[]): Promise<Map<string, string[]>>;
 
   // --------------------------------------------------------------------------
   // CLI extension point

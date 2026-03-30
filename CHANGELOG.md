@@ -5,6 +5,41 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-03-30
+
+### Added
+
+- **Composite plugin architecture**: Two operating modes — **unified** (Graphiti handles tools + hooks, same as v0.4.x) and **hybrid** (Graphiti for tools with ReBAC, EverMemOS for conversational hooks without SpiceDB). Configured via a new `liminal` config field that defaults to the `backend` value.
+- **`liminal` config field**: Set to `"evermemos"` for hybrid mode. When omitted or equal to `backend`, the plugin operates in unified mode (identical to v0.4.x behavior).
+- **Hybrid hook routing**: In hybrid mode, `before_agent_start` queries EverMemOS for recent conversational context (injected as `<recent-context>`), and `agent_end` stores to EverMemOS only (fire-and-forget, no SpiceDB writes). Graphiti knowledge is accessed on-demand via `memory_recall`. Unified mode behavior is unchanged.
+- **`memory_promote` tool** (hybrid mode only): Searches the liminal backend (EverMemOS) and stores matching memories into the primary backend (Graphiti) with full SpiceDB fragment authorization. Bridges short-term conversational context into the long-term knowledge graph.
+
+### Removed
+
+- **`backend: "evermemos"` as primary backend**: EverMemOS now serves exclusively as the liminal backend for hook-driven auto-recall and auto-capture. Tool-based operations (`memory_recall`, `memory_store`, `memory_forget`, `memory_share`, `memory_unshare`) always route to Graphiti.
+- **Trace overlay** (`docker/evermemos/trace_overlay.py`): No longer needed — EverMemOS doesn't write SpiceDB fragment relationships in its liminal role.
+- **`discoverFragmentIds` / `resolveAnchors`** from EverMemOS backend and `resolveAnchors` from the `MemoryBackend` interface.
+- **Recall rate limiting** (`maxRecallsPerTurn` config, rate-limit check in `memory_recall`): Was an artifact of using EverMemOS as the primary tool backend.
+- **EverMemOS discovery config** (`discoveryPollIntervalMs`, `discoveryTimeoutMs`).
+
+### Migration
+
+- **`backend: "evermemos"` users**: Migrate to `"backend": "graphiti", "liminal": "evermemos"`. EverMemOS can no longer be the primary backend.
+- **Remove `maxRecallsPerTurn`** from config if present (now rejected as unknown key).
+- **Remove `discoveryPollIntervalMs` / `discoveryTimeoutMs`** from `evermemos` config if present.
+
+## [0.4.2] - 2026-03-28
+
+### Fixed
+
+- **npmSpec pinned to old version**: `openclaw plugins update` could not resolve newer published versions because `npmSpec` was pinned to `0.3.5`. Updated to `@latest`.
+
+## [0.4.1] - 2026-03-28
+
+### Fixed
+
+- **EverMemOS Docker build files missing from npm package**: `entrypoint.sh` and `supervisord.conf` were excluded because `package.json` `files` array was missing `*.sh` and `*.conf` globs. The EverMemOS Docker image failed to build on install targets.
+
 ## [0.4.0] - 2026-03-27
 
 ### Added
