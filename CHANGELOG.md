@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **SpiceDB schema auto-update on startup**: Schema write check now compares full schema content instead of checking for `memory_fragment` keyword. Previously, adding new permissions (like `share`) to existing definitions would not trigger a schema update, causing `FAILED_PRECONDITION` errors at runtime.
+- **SpiceDB schema always written at startup**: Schema is now unconditionally written on every startup (idempotent). Previously, a keyword check could skip the write when new permissions were added to existing definitions, causing `FAILED_PRECONDITION` errors. Includes a single retry with 2s delay if SpiceDB isn't ready yet, and errors are now logged instead of silently swallowed.
 
 ## [0.5.0] - 2026-03-30
 

@@ -532,20 +532,11 @@ describe("openclaw-memory-rebac plugin", () => {
     expect(logs.some(log => log.includes("writing SpiceDB schema"))).toBe(true);
   });
 
-  test("service.start() skips schema write when already up to date", async () => {
-    const { readFileSync } = await import("fs");
-    const { join, dirname } = await import("path");
-    const { fileURLToPath } = await import("url");
-    const schemaPath = join(dirname(fileURLToPath(import.meta.url)), "schema.zed");
-    const currentSchema = readFileSync(schemaPath, "utf-8");
-
+  test("service.start() always writes schema (idempotent)", async () => {
     const { v1 } = await import("@authzed/authzed-node");
     const mockClient = v1.NewClient();
 
-    mockClient.promises.readSchema = vi.fn().mockResolvedValue({
-      schemaText: currentSchema,
-    });
-    mockClient.promises.writeSchema = vi.fn();
+    mockClient.promises.writeSchema = vi.fn().mockResolvedValue({});
 
     const plugin = await import("./index.js");
     await plugin.default.register(mockApi);
@@ -553,7 +544,7 @@ describe("openclaw-memory-rebac plugin", () => {
     const service = registeredServices[0];
     await service.start();
 
-    expect(mockClient.promises.writeSchema).not.toHaveBeenCalled();
+    expect(mockClient.promises.writeSchema).toHaveBeenCalled();
   });
 
   test("service.start() ensures default group membership", async () => {

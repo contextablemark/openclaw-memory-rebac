@@ -220,6 +220,7 @@ const rebacMemoryPlugin = {
           ),
         }),
         async execute(_toolCallId, params) {
+
           const { query, limit = 10, scope = "all" } = params as {
             query: string;
             limit?: number;
@@ -366,6 +367,7 @@ const rebacMemoryPlugin = {
           ),
         }),
         async execute(_toolCallId, params) {
+
           const {
             content,
             source_description = "conversation",
@@ -503,6 +505,7 @@ const rebacMemoryPlugin = {
           id: Type.String({ description: "Memory ID to forget (e.g. 'fact:da8650cb-...' or bare UUID)" }),
         }),
         async execute(_toolCallId, params) {
+
           const { id } = params as { id: string };
 
           const subject = resolveSubject(ctx.agentId);
@@ -589,6 +592,7 @@ const rebacMemoryPlugin = {
           share_with: Type.Array(Type.String(), { description: "Person or agent IDs to grant view access" }),
         }),
         async execute(_toolCallId, params) {
+
           const { id, share_with } = params as { id: string; share_with: string[] };
 
           if (share_with.length === 0) {
@@ -644,6 +648,7 @@ const rebacMemoryPlugin = {
           revoke_from: Type.Array(Type.String(), { description: "Person or agent IDs to revoke view access from" }),
         }),
         async execute(_toolCallId, params) {
+
           const { id, revoke_from } = params as { id: string; revoke_from: string[] };
 
           if (revoke_from.length === 0) {
@@ -744,6 +749,7 @@ const rebacMemoryPlugin = {
             limit: Type.Optional(Type.Number({ description: "Max memories to promote (default: 3)" })),
           }),
           async execute(_toolCallId, params) {
+  
             const { query, groupId, limit: promoteLimit = 3 } = params as {
               query: string;
               groupId?: string;
@@ -1164,18 +1170,29 @@ const rebacMemoryPlugin = {
         const defaultState = getDefaultState();
         const backendStatus = await backend.getStatus();
         let spicedbOk = false;
+        const schemaPath = join(dirname(fileURLToPath(import.meta.url)), "schema.zed");
+        const schema = readFileSync(schemaPath, "utf-8");
         try {
-          const existing = await spicedb.readSchema();
+          // Always write — SpiceDB normalizes formatting so text comparison is unreliable
+          api.logger.info("openclaw-memory-rebac: writing SpiceDB schema");
+          await spicedb.writeSchema(schema);
           spicedbOk = true;
-          const schemaPath = join(dirname(fileURLToPath(import.meta.url)), "schema.zed");
-          const schema = readFileSync(schemaPath, "utf-8");
-          if (!existing || existing.trim() !== schema.trim()) {
-            api.logger.info("openclaw-memory-rebac: writing SpiceDB schema (first run or update)");
+          api.logger.info("openclaw-memory-rebac: SpiceDB schema written successfully");
+        } catch (err) {
+          // Retry once after a short delay (SpiceDB may still be starting)
+          api.logger.warn(
+            `openclaw-memory-rebac: SpiceDB schema write failed, retrying in 2s: ${err instanceof Error ? err.message : String(err)}`,
+          );
+          try {
+            await new Promise((r) => setTimeout(r, 2000));
             await spicedb.writeSchema(schema);
-            api.logger.info("openclaw-memory-rebac: SpiceDB schema written successfully");
+            spicedbOk = true;
+            api.logger.info("openclaw-memory-rebac: SpiceDB schema written successfully (retry)");
+          } catch (retryErr) {
+            api.logger.error(
+              `openclaw-memory-rebac: SpiceDB schema write failed after retry: ${retryErr instanceof Error ? retryErr.message : String(retryErr)}`,
+            );
           }
-        } catch {
-          // Will be retried on first use
         }
 
         if (spicedbOk) {
