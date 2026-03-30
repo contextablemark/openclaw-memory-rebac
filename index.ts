@@ -1043,7 +1043,7 @@ const rebacMemoryPlugin = {
               if (userMsg && assistantMsg) {
                 liminal.enrichSession({
                   sessionId: state.sessionId,
-                  groupId: liminalGroupId,
+                  groupId: agentLiminalGroup,
                   userMsg,
                   assistantMsg,
                 }).catch(() => {});
