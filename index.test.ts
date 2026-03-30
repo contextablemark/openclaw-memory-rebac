@@ -7,6 +7,13 @@
 
 import { describe, test, expect, vi, beforeEach } from "vitest";
 
+// Mock undici for EverMemOS hybrid mode tests (search uses undici.request for GET with body)
+vi.mock("undici", () => ({
+  request: vi.fn(),
+}));
+import { request as mockUndiciRequest } from "undici";
+const mockUndici = vi.mocked(mockUndiciRequest);
+
 // Mock @authzed/authzed-node before importing the plugin
 vi.mock("@authzed/authzed-node", () => {
   const mockPromises = {
@@ -148,6 +155,7 @@ describe("openclaw-memory-rebac plugin", () => {
     vi.restoreAllMocks();
     vi.clearAllMocks();
     mockFetch.mockReset();
+    mockUndici.mockReset();
     registeredTools = [];
     registeredClis = [];
     registeredServices = [];
@@ -513,6 +521,199 @@ describe("openclaw-memory-rebac plugin", () => {
       { agentId: "test", sessionKey: "agent:cron-special:task" },
     );
     expect(result).toBeUndefined();
+  });
+
+  // ==========================================================================
+  // Per-agent liminal isolation tests (hybrid mode)
+  // ==========================================================================
+
+  /** Helper to create a mock undici response (for EverMemOS GET-with-body search) */
+  function undiciResponse(body: unknown, statusCode = 200) {
+    return {
+      statusCode,
+      headers: { "content-type": "application/json" },
+      body: {
+        json: vi.fn().mockResolvedValue(body),
+        text: vi.fn().mockResolvedValue(JSON.stringify(body)),
+      },
+    };
+  }
+
+  test("hybrid auto-recall uses per-agent liminal group ID", async () => {
+    const plugin = await import("./index.js");
+    const hybridApi = {
+      ...mockApi,
+      on: vi.fn(),
+      pluginConfig: {
+        ...mockApi.pluginConfig,
+        liminal: "evermemos",
+        evermemos: { endpoint: "http://localhost:1995" },
+      },
+    };
+    plugin.default.register(hybridApi);
+
+    const recallCalls = hybridApi.on.mock.calls.filter((c: unknown[]) => c[0] === "before_agent_start");
+    expect(recallCalls).toHaveLength(1);
+    const handler = recallCalls[0][1];
+
+    // Mock EverMemOS search response via undici (empty results)
+    mockUndici.mockResolvedValue(
+      undiciResponse({ result: { memories: [], scores: [] } }) as never,
+    );
+
+    // Call with agent-alpha
+    await handler(
+      { prompt: "What happened last week?" },
+      { agentId: "agent-alpha" },
+    );
+
+    // Call with agent-beta
+    await handler(
+      { prompt: "What happened last week?" },
+      { agentId: "agent-beta" },
+    );
+
+    // Verify each agent searched its own group via undici
+    expect(mockUndici).toHaveBeenCalledTimes(2);
+    const body1 = JSON.parse(mockUndici.mock.calls[0][1]?.body as string);
+    const body2 = JSON.parse(mockUndici.mock.calls[1][1]?.body as string);
+
+    // Different agents must get different group IDs
+    expect(body1.group_id).toContain("agent-alpha");
+    expect(body2.group_id).toContain("agent-beta");
+    expect(body1.group_id).not.toBe(body2.group_id);
+  });
+
+  test("hybrid auto-capture stores to per-agent liminal group", async () => {
+    const plugin = await import("./index.js");
+    const hybridApi = {
+      ...mockApi,
+      on: vi.fn(),
+      pluginConfig: {
+        ...mockApi.pluginConfig,
+        liminal: "evermemos",
+        evermemos: { endpoint: "http://localhost:1995" },
+      },
+    };
+    plugin.default.register(hybridApi);
+
+    const captureCalls = hybridApi.on.mock.calls.filter((c: unknown[]) => c[0] === "agent_end");
+    expect(captureCalls).toHaveLength(1);
+    const handler = captureCalls[0][1];
+
+    // Store uses fetch (POST), not undici
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({}),
+    });
+
+    // Capture from agent-alpha
+    await handler(
+      { success: true, messages: [
+        { role: "user", content: "Hello from agent alpha" },
+        { role: "assistant", content: "Hi there!" },
+      ] },
+      { agentId: "agent-alpha" },
+    );
+
+    // Capture from agent-beta
+    await handler(
+      { success: true, messages: [
+        { role: "user", content: "Hello from beta" },
+        { role: "assistant", content: "Hey!" },
+      ] },
+      { agentId: "agent-beta" },
+    );
+
+    // Find store calls (POST to /memories)
+    const storeCalls = mockFetch.mock.calls.filter(
+      (c: unknown[]) => String(c[0]).includes("/memories"),
+    );
+    expect(storeCalls.length).toBe(2);
+
+    const storeBody1 = JSON.parse(
+      ((storeCalls[0] as unknown[])[1] as Record<string, unknown>).body as string,
+    );
+    const storeBody2 = JSON.parse(
+      ((storeCalls[1] as unknown[])[1] as Record<string, unknown>).body as string,
+    );
+
+    expect(storeBody1.group_id).toContain("agent-alpha");
+    expect(storeBody2.group_id).toContain("agent-beta");
+    expect(storeBody1.group_id).not.toBe(storeBody2.group_id);
+  });
+
+  test("hybrid auto-recall: agent-alpha cannot see agent-beta memories", async () => {
+    const plugin = await import("./index.js");
+    const hybridApi = {
+      ...mockApi,
+      on: vi.fn(),
+      pluginConfig: {
+        ...mockApi.pluginConfig,
+        liminal: "evermemos",
+        evermemos: { endpoint: "http://localhost:1995" },
+      },
+    };
+    plugin.default.register(hybridApi);
+
+    const recallCalls = hybridApi.on.mock.calls.filter((c: unknown[]) => c[0] === "before_agent_start");
+    const handler = recallCalls[0][1];
+
+    // Return memories based on which group is queried (via undici)
+    mockUndici.mockImplementation((_url: unknown, opts: Record<string, unknown>) => {
+      const body = JSON.parse(opts.body as string);
+      const groupId = body.group_id as string;
+
+      if (groupId.includes("agent-alpha")) {
+        return Promise.resolve(undiciResponse({
+          result: {
+            memories: [{ [groupId]: [{
+              id: "mem-alpha-1",
+              memory_type: "episodic_memory",
+              episode: "Alpha's private conversation",
+              group_id: groupId,
+            }] }],
+            scores: [{ [groupId]: [0.95] }],
+          },
+        }));
+      }
+
+      if (groupId.includes("agent-beta")) {
+        return Promise.resolve(undiciResponse({
+          result: {
+            memories: [{ [groupId]: [{
+              id: "mem-beta-1",
+              memory_type: "episodic_memory",
+              episode: "Beta's secret data",
+              group_id: groupId,
+            }] }],
+            scores: [{ [groupId]: [0.90] }],
+          },
+        }));
+      }
+
+      return Promise.resolve(undiciResponse({ result: { memories: [], scores: [] } }));
+    });
+
+    // Agent alpha recalls
+    const alphaResult = await handler(
+      { prompt: "What do you know?" },
+      { agentId: "agent-alpha" },
+    );
+
+    // Agent beta recalls
+    const betaResult = await handler(
+      { prompt: "What do you know?" },
+      { agentId: "agent-beta" },
+    );
+
+    // Alpha sees only its own memories
+    expect(alphaResult.prependContext).toContain("Alpha's private conversation");
+    expect(alphaResult.prependContext).not.toContain("Beta's secret data");
+
+    // Beta sees only its own memories
+    expect(betaResult.prependContext).toContain("Beta's secret data");
+    expect(betaResult.prependContext).not.toContain("Alpha's private conversation");
   });
 
   test("service.start() writes SpiceDB schema on first run", async () => {

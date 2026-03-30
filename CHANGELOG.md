@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-03-30
+
+### Fixed
+
+- **Per-agent liminal memory isolation**: Each agent now gets its own EverMemOS group (`{baseGroupId}:{agentId}`) for conversational memory. Previously all agents shared a single group, causing full bleed-through of unrelated conversations in `<recent-context>`.
+
 ## [0.5.1] - 2026-03-30
 
 ### Added

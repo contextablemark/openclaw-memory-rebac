@@ -151,9 +151,15 @@ const rebacMemoryPlugin = {
     const isHybrid = cfg.isHybrid;
     const spicedb = new SpiceDbClient(cfg.spicedb);
     const backendDefaultGroupId = defaultGroupId(cfg);
-    const liminalDefaultGroupId = isHybrid
+    const liminalBaseGroupId = isHybrid
       ? ((cfg.liminalConfig["defaultGroupId"] as string) ?? "main")
       : backendDefaultGroupId;
+
+    /** Per-agent liminal group — each agent gets its own conversational memory. */
+    function liminalGroupId(agentId?: string): string {
+      const id = agentId ?? cfg.subjectId;
+      return `${liminalBaseGroupId}:${id}`;
+    }
 
     // Suppress transient gRPC rejections from @grpc/grpc-js during connection setup
     const grpcRejectionHandler = (reason: unknown) => {
@@ -763,7 +769,7 @@ const rebacMemoryPlugin = {
             // 1. Search the liminal backend
             const liminalResults = await searchAuthorizedMemories(liminal, {
               query,
-              groupIds: [liminalDefaultGroupId],
+              groupIds: [liminalGroupId(ctx.agentId)],
               limit: promoteLimit,
             });
 
@@ -859,7 +865,7 @@ const rebacMemoryPlugin = {
             const autoRecallLimit = 8;
             const liminalResults = await searchAuthorizedMemories(liminal, {
               query: event.prompt,
-              groupIds: [liminalDefaultGroupId],
+              groupIds: [liminalGroupId(ctx?.agentId)],
               limit: autoRecallLimit,
               sessionId: state.sessionId,
             });
@@ -998,11 +1004,11 @@ const rebacMemoryPlugin = {
           if (isHybrid) {
             // Hybrid mode: store to liminal backend only (fire-and-forget, no SpiceDB).
             // Primary backend (Graphiti) gets data only via explicit memory_store or memory_promote.
-            const liminalGroupId = liminalDefaultGroupId;
+            const agentLiminalGroup = liminalGroupId(ctx?.agentId);
 
             await liminal.store({
               content: episodeBody,
-              groupId: liminalGroupId,
+              groupId: agentLiminalGroup,
               sourceDescription: "auto-captured conversation",
             });
 
