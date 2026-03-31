@@ -112,6 +112,16 @@ describe("stripEnvelopeMetadata", () => {
     expect(stripEnvelopeMetadata(input)).toBe("before  after");
   });
 
+  test("strips <memory> block (liminal XML context)", () => {
+    const input = "before\n<memory>\n  <episodic>\n    - stuff\n  </episodic>\n</memory>\nafter";
+    expect(stripEnvelopeMetadata(input)).toBe("before\n\nafter");
+  });
+
+  test("strips <recent-context> block (legacy liminal context)", () => {
+    const input = "before\n<recent-context>\nRecent conversational memory:\n[chunk:abc] stuff\n</recent-context>\nafter";
+    expect(stripEnvelopeMetadata(input)).toBe("before\n\nafter");
+  });
+
   test("preserves plain text without metadata", () => {
     const input = "What's the weather today?";
     expect(stripEnvelopeMetadata(input)).toBe(input);
@@ -136,6 +146,148 @@ describe("stripEnvelopeMetadata", () => {
     expect(stripEnvelopeMetadata(input)).toBe(
       "Alice (42): Can we deploy Friday?\nBob (99): Sounds good to me",
     );
+  });
+});
+
+// ============================================================================
+// formatLiminalContext — pure function tests
+// ============================================================================
+
+describe("formatLiminalContext", () => {
+  let formatLiminalContext: (results: import("./search.js").SearchResult[], minScore?: number) => string;
+
+  beforeEach(async () => {
+    const mod = await import("./search.js");
+    formatLiminalContext = mod.formatLiminalContext;
+  });
+
+  function makeResult(overrides: Partial<import("./search.js").SearchResult> = {}): import("./search.js").SearchResult {
+    return {
+      type: "chunk",
+      uuid: "test-uuid",
+      group_id: "test-group",
+      summary: "Test memory content",
+      context: "episode: Test subject",
+      created_at: "2026-03-28T05:00:00Z",
+      score: 0.9,
+      ...overrides,
+    };
+  }
+
+  test("returns empty string when no results", () => {
+    expect(formatLiminalContext([])).toBe("");
+  });
+
+  test("normalizes scores to 0–1 and filters by relative threshold", () => {
+    // Raw scores: 0.002, 0.001, 0.0003 → normalized: 1.0, 0.5, 0.15
+    const results = [
+      makeResult({ score: 0.002, summary: "best match", uuid: "a" }),
+      makeResult({ score: 0.001, summary: "decent match", uuid: "b" }),
+      makeResult({ score: 0.0003, summary: "poor match", uuid: "c" }),
+    ];
+    const output = formatLiminalContext(results, 0.3);
+    expect(output).toContain("best match");
+    expect(output).toContain("decent match");
+    expect(output).not.toContain("poor match");
+  });
+
+  test("single result normalizes to 1.0 and passes any threshold < 1", () => {
+    const results = [makeResult({ score: 0.0005 })];
+    const output = formatLiminalContext(results, 0.9);
+    expect(output).toContain("Test memory content");
+  });
+
+  test("treats undefined score as 0 (filtered out when others have scores)", () => {
+    const results = [
+      makeResult({ score: 0.5, summary: "scored", uuid: "a" }),
+      makeResult({ score: undefined, summary: "unscored", uuid: "b" }),
+    ];
+    const output = formatLiminalContext(results, 0.1);
+    expect(output).toContain("scored");
+    expect(output).not.toContain("unscored");
+  });
+
+  test("uses default minScore of 0.3 (normalized)", () => {
+    // Two results: 0.002 → 1.0, 0.0004 → 0.2. With default 0.3, only first passes.
+    const results = [
+      makeResult({ score: 0.002, summary: "top result", uuid: "a" }),
+      makeResult({ score: 0.0004, summary: "weak result", uuid: "b" }),
+    ];
+    const output = formatLiminalContext(results);
+    expect(output).toContain("top result");
+    expect(output).not.toContain("weak result");
+  });
+
+  test("caps content at 2000 characters", () => {
+    const longContent = "x".repeat(3000);
+    const results = [makeResult({ summary: longContent })];
+    const output = formatLiminalContext(results);
+    expect(output).toContain("x".repeat(2000) + "…");
+    expect(output).not.toContain("x".repeat(2001));
+  });
+
+  test("does not truncate content at or below 2000 characters", () => {
+    const exactContent = "x".repeat(2000);
+    const results = [makeResult({ summary: exactContent })];
+    const output = formatLiminalContext(results);
+    expect(output).toContain(exactContent);
+    expect(output).not.toContain("…");
+  });
+
+  test("wraps output in <memory> XML tags", () => {
+    const results = [makeResult()];
+    const output = formatLiminalContext(results);
+    expect(output).toMatch(/^<memory>/);
+    expect(output).toMatch(/<\/memory>$/);
+  });
+
+  test("groups results into typed sections", () => {
+    const results = [
+      makeResult({ context: "episode: Meeting notes", summary: "We discussed Q2 goals", uuid: "ep1" }),
+      makeResult({ context: "profile: Alice", summary: "Prefers TypeScript", type: "summary", uuid: "pr1" }),
+      makeResult({ context: "foresight: Budget", summary: "Likely to exceed by 10%", type: "summary", uuid: "fs1" }),
+    ];
+    const output = formatLiminalContext(results);
+    expect(output).toContain("<episodic>");
+    expect(output).toContain("</episodic>");
+    expect(output).toContain("<profile>");
+    expect(output).toContain("</profile>");
+    expect(output).toContain("<foresight>");
+    expect(output).toContain("</foresight>");
+  });
+
+  test("includes timestamps when available", () => {
+    const results = [makeResult({ created_at: "2026-03-28T05:00:00Z" })];
+    const output = formatLiminalContext(results);
+    expect(output).toContain("[2026-03-28 05:00]");
+  });
+
+  test("omits timestamps when missing", () => {
+    const results = [makeResult({ created_at: "" })];
+    const output = formatLiminalContext(results);
+    expect(output).not.toMatch(/\[\d{4}-/);
+  });
+
+  test("includes subject from context", () => {
+    const results = [makeResult({ context: "episode: Team standup", summary: "Discussed blockers" })];
+    const output = formatLiminalContext(results);
+    expect(output).toContain("Team standup: Discussed blockers");
+  });
+
+  test("omits empty sections", () => {
+    const results = [makeResult({ context: "episode: Test" })];
+    const output = formatLiminalContext(results);
+    expect(output).not.toContain("<profile>");
+    expect(output).not.toContain("<foresight>");
+    expect(output).not.toContain("<event>");
+  });
+
+  test("handles event_log type", () => {
+    const results = [makeResult({ context: "event: Deploy", type: "fact", summary: "Deployed v2.1" })];
+    const output = formatLiminalContext(results);
+    expect(output).toContain("<event>");
+    expect(output).toContain("Deployed v2.1");
+    expect(output).toContain("</event>");
   });
 });
 

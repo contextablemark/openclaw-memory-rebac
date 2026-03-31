@@ -44,6 +44,7 @@ import {
 import {
   searchAuthorizedMemories,
   formatDualResults,
+  formatLiminalContext,
 } from "./search.js";
 import { registerCommands } from "./cli.js";
 
@@ -108,6 +109,8 @@ export function stripEnvelopeMetadata(text: string): string {
   // Strip memory injection blocks
   result = result.replace(/<relevant-memories>[\s\S]*?<\/relevant-memories>/g, "");
   result = result.replace(/<memory-tools>[\s\S]*?<\/memory-tools>/g, "");
+  result = result.replace(/<memory>[\s\S]*?<\/memory>/g, "");
+  result = result.replace(/<recent-context>[\s\S]*?<\/recent-context>/g, "");
 
   // Collapse excess blank lines and trim
   result = result.replace(/\n{3,}/g, "\n\n").trim();
@@ -896,11 +899,10 @@ const rebacMemoryPlugin = {
           if (isHybrid) {
             // Hybrid mode: query liminal backend only (no SpiceDB auth).
             // Graphiti knowledge is accessed on-demand via memory_recall tool.
-            const autoRecallLimit = 8;
             const liminalResults = await searchAuthorizedMemories(liminal, {
               query: event.prompt,
               groupIds: [liminalGroupId(ctx?.agentId)],
-              limit: autoRecallLimit,
+              limit: cfg.autoRecallLimit,
               sessionId: state.sessionId,
             });
 
@@ -914,17 +916,16 @@ const rebacMemoryPlugin = {
               "- memory_promote: Promote recent memories into the long-term knowledge graph.\n" +
               "</memory-tools>";
 
-            if (liminalResults.length === 0) return { prependContext: toolHint };
+            const memoryBlock = formatLiminalContext(liminalResults, cfg.minLiminalScore);
+            if (!memoryBlock) return { prependContext: toolHint };
 
-            const memoryContext = liminalResults
-              .map((r) => `[${r.type}:${r.uuid}] ${r.summary}${r.context ? ` (${r.context})` : ""}`)
-              .join("\n");
+            const injectedCount = liminalResults.filter((r) => (r.score ?? 0) >= cfg.minLiminalScore).length;
             api.logger.info?.(
-              `openclaw-memory-rebac: injecting ${liminalResults.length} liminal memories`,
+              `openclaw-memory-rebac: injecting ${injectedCount}/${liminalResults.length} liminal memories (minScore=${cfg.minLiminalScore})`,
             );
 
             return {
-              prependContext: `${toolHint}\n\n<recent-context>\nRecent conversational memory:\n${memoryContext}\n</recent-context>`,
+              prependContext: `${toolHint}\n\n${memoryBlock}`,
             };
           }
 
@@ -938,7 +939,7 @@ const rebacMemoryPlugin = {
             if (!sessionGroups.includes(sg)) sessionGroups.push(sg);
           }
 
-          const autoRecallLimit = 8;
+          const autoRecallLimit = cfg.autoRecallLimit;
           const allGroups = [...longTermGroups, ...sessionGroups];
           const allResults = allGroups.length > 0
             ? await searchAuthorizedMemories(backend, {

@@ -16,7 +16,7 @@ Hybrid mode (liminal: "evermemos"):
   │   ├── memory_share / unshare
   │   └── memory_promote (reads EverMemOS, writes Graphiti)
   ├── Hooks → EverMemOS only (liminal)
-  │   ├── before_agent_start → EverMemOS auto-recall (recent context)
+  │   ├── before_agent_start → EverMemOS auto-recall (<memory> XML)
   │   └── agent_end → EverMemOS auto-capture (no SpiceDB writes)
   └── SpiceDB (Graphiti fragments only)
 ```
@@ -195,7 +195,7 @@ When enabled (default: `true`), the plugin searches relevant memories before eac
 
 **Unified mode**: Searches Graphiti via SpiceDB-authorized groups. Injects as `<relevant-memories>` blocks. Searches up to 5 long-term and 3 session memories per turn, deduplicates session results against long-term.
 
-**Hybrid mode**: Searches EverMemOS only (no SpiceDB). Injects as `<recent-context>` blocks. The agent accesses Graphiti knowledge on-demand via the `memory_recall` tool.
+**Hybrid mode**: Searches EverMemOS only (no SpiceDB). Injects as structured `<memory>` XML with typed sections (`<episodic>`, `<profile>`, `<foresight>`, `<event>`). Fetches up to `autoRecallLimit` results (default: 5), filters by `minLiminalScore` (default: 0.3 — scores are normalized to 0–1 relative to the best match). The agent accesses Graphiti knowledge on-demand via the `memory_recall` tool.
 
 Both modes only trigger when the user prompt is at least 5 characters.
 
@@ -336,6 +336,8 @@ Agents without an `identities` entry (like service agents) are not linked to any
 | `identities` | object | `{}` | Maps agent IDs to owner person IDs for cross-agent recall (see [Identity Linking](#identity-linking)) |
 | `autoCapture` | boolean | `true` | Auto-capture conversations |
 | `autoRecall` | boolean | `true` | Auto-inject relevant memories |
+| `autoRecallLimit` | integer | `5` | Max results for liminal auto-recall (hybrid mode) |
+| `minLiminalScore` | number | `0.3` | Min normalized score for liminal results (0–1, where 1.0 = best match in batch) |
 | `sessionFilter.excludePatterns` | string[] | `[]` | Skip auto-capture/recall for sessions matching any pattern |
 | `sessionFilter.includePatterns` | string[] | `[]` | Only auto-capture/recall sessions matching at least one pattern |
 | `customInstructions` | string | *(see below)* | Custom extraction instructions |
@@ -614,7 +616,7 @@ OPENCLAW_LIVE_TEST=1 npm run test:e2e
 │   │   └── .env.example       # LLM, vectorize, rerank API keys
 │   └── spicedb/
 │       └── docker-compose.yml
-├── *.test.ts                 # Unit tests (186)
+├── *.test.ts                 # Unit tests (209)
 ├── e2e.test.ts               # Graphiti E2E tests (14, live services)
 ├── e2e-backend.test.ts       # Backend-agnostic E2E contract (13)
 ├── e2e-evermemos.test.ts     # EverMemOS-specific E2E (7)

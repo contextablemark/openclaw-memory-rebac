@@ -36,6 +36,10 @@ export type RebacMemoryConfig = {
   groupOwners: Record<string, string[]>;
   autoCapture: boolean;
   autoRecall: boolean;
+  /** Maximum memories to retrieve during auto-recall (top_k sent to backend). */
+  autoRecallLimit: number;
+  /** Minimum relevance score for liminal memories to be injected (0–1). */
+  minLiminalScore: number;
   maxCaptureMessages: number;
   sessionFilter?: {
     excludePatterns?: string[];
@@ -107,7 +111,8 @@ export const rebacMemoryConfigSchema = {
     const allowedKeys = [
       "backend", "liminal", "spicedb",
       "subjectType", "subjectId", "identities", "groupOwners",
-      "autoCapture", "autoRecall", "maxCaptureMessages", "sessionFilter",
+      "autoCapture", "autoRecall", "autoRecallLimit", "minLiminalScore",
+      "maxCaptureMessages", "sessionFilter",
       backendName,
     ];
     if (isHybrid) allowedKeys.push(liminalName);
@@ -184,6 +189,14 @@ export const rebacMemoryConfigSchema = {
       groupOwners,
       autoCapture: cfg.autoCapture !== false,
       autoRecall: cfg.autoRecall !== false,
+      autoRecallLimit:
+        typeof cfg.autoRecallLimit === "number" && cfg.autoRecallLimit > 0
+          ? cfg.autoRecallLimit
+          : pluginDefaults.autoRecallLimit,
+      minLiminalScore:
+        typeof cfg.minLiminalScore === "number" && cfg.minLiminalScore >= 0
+          ? cfg.minLiminalScore
+          : pluginDefaults.minLiminalScore,
       maxCaptureMessages:
         typeof cfg.maxCaptureMessages === "number" && cfg.maxCaptureMessages > 0
           ? cfg.maxCaptureMessages

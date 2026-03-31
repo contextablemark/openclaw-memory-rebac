@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.4] - 2026-03-31
+
+### Fixed
+
+- **Liminal auto-recall score filtering**: EverMemOS search scores from the Qwen3-Reranker-4B model are raw logit-derived values (0.0001–0.01 range), not normalized 0–1. The previous `minLiminalScore` threshold of 0.1 filtered out all results — even highly relevant fresh memories. `formatLiminalContext()` now normalizes scores relative to the batch maximum before filtering: top result = 1.0, others proportional. The threshold is now reranker-agnostic.
+
+### Changed
+
+- **Structured `<memory>` XML for liminal auto-recall**: Hybrid mode's `before_agent_start` hook now injects EverMemOS memories as structured XML (`<memory>` with `<episodic>`, `<profile>`, `<foresight>`, `<event>` sections) instead of flat `<recent-context>` text. Each memory is capped at 2000 characters. Aligns with the upstream EverMemOS OpenClaw plugin's formatting approach.
+- **`autoRecallLimit` default reduced from 8 to 5**: Reduces context window consumption during the preload phase, aligning with the upstream EverMemOS plugin's `topK: 5`.
+- **`minLiminalScore` default changed from 0.1 to 0.3**: With score normalization, 0.3 means "include results scoring at least 30% of the best match in the batch". Filters low-relevance results while keeping meaningful context.
+- **Memory echo prevention**: User messages are now stripped of `<memory>`, `<recent-context>`, `<relevant-memories>`, and `<memory-tools>` blocks before EverMemOS auto-capture, preventing previously-injected context from being re-stored as new memories.
+
+### Added
+
+- **`autoRecallLimit` config key**: Controls how many results the liminal auto-recall hook fetches from EverMemOS (default: 5). Previously hardcoded to 8.
+- **`minLiminalScore` config key**: Minimum normalized relevance score for liminal auto-recall results (default: 0.3). Results below this threshold are excluded from injected context.
+
 ## [0.5.3] - 2026-03-31
 
 ### Added

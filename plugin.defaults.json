@@ -8,5 +8,7 @@
   "subjectId": "default",
   "autoCapture": true,
   "autoRecall": true,
+  "autoRecallLimit": 5,
+  "minLiminalScore": 0.3,
   "maxCaptureMessages": 10
 }

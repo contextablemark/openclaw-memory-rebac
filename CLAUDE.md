@@ -8,7 +8,7 @@ OpenClaw composite memory plugin: SpiceDB ReBAC authorization with a primary kno
 
 ```bash
 npm run build         # Compile TS to dist/ (also copies JSON defaults)
-npm test              # Unit tests (~186 tests, no services needed)
+npm test              # Unit tests (~209 tests, no services needed)
 npm run test:e2e      # Graphiti E2E tests (14 tests, requires SpiceDB + Graphiti)
 npm run test:e2e:backend  # Backend-agnostic E2E (13 tests, uses E2E_BACKEND env var)
 npm run test:e2e:evermemos # EverMemOS-specific E2E (requires SpiceDB + EverMemOS)
@@ -32,7 +32,7 @@ Hybrid mode (liminal: "evermemos"):
   │   ├── memory_share / unshare
   │   └── memory_promote (reads EverMemOS, writes Graphiti)
   ├── Hooks → EverMemOS only (liminal)
-  │   ├── before_agent_start → EverMemOS auto-recall (recent context)
+  │   ├── before_agent_start → EverMemOS auto-recall (<memory> XML)
   │   └── agent_end → EverMemOS auto-capture (no SpiceDB writes)
   └── SpiceDB (Graphiti fragments only)
 ```

@@ -260,6 +260,8 @@ In hybrid mode, `memory_promote` is automatically registered as an additional to
 | `identities` | `Record<string, string>` | `{}` | Maps agent IDs to owner person IDs for cross-agent recall |
 | `autoCapture` | boolean | `true` | Capture conversations after each agent turn |
 | `autoRecall` | boolean | `true` | Inject memories before each agent turn |
+| `autoRecallLimit` | integer | `5` | Max results for liminal auto-recall in hybrid mode |
+| `minLiminalScore` | number | `0.3` | Min normalized score for liminal results (0–1, where 1.0 = best match in batch) |
 | `customInstructions` | string | *(see below)* | Extraction instructions sent to the LLM |
 | `maxCaptureMessages` | integer | `10` | Max messages per auto-capture batch (1-50) |
 
@@ -650,6 +652,7 @@ The custom startup.py flattens nested LLM-extracted attributes to JSON strings b
 2. Check that memories exist: `rebac-mem search "test" --limit 5`
 3. Ensure the SpiceDB schema is written: `rebac-mem schema-write`
 4. Check that `autoRecall` is `true` in the plugin config
+5. **Hybrid mode**: If EverMemOS returns results but they don't appear in context, check `minLiminalScore`. Scores are normalized to 0–1 relative to the batch max (top result = 1.0). The default threshold of 0.3 filters results below 30% of the best match. Lower it (e.g., `0.1`) to include more results, or set to `0` to disable filtering.
 
 ### EverMemOS container unhealthy
 

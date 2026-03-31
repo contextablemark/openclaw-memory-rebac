@@ -21,6 +21,7 @@ import { describe, test, expect, beforeAll, afterAll } from "vitest";
 import { SpiceDbClient } from "./spicedb.js";
 import { EverMemOSBackend } from "./backends/evermemos.js";
 import type { EverMemOSConfig } from "./backends/evermemos.js";
+import { formatLiminalContext } from "./search.js";
 import {
   ensureGroupMembership,
   type Subject,
@@ -235,5 +236,67 @@ describe("e2e: EverMemOS integration", () => {
     // EverMemOS returns UUID anchor (customPrompt is ignored but store works)
     expect(fragmentId).toBeTruthy();
   });
+
+  // --------------------------------------------------------------------------
+  // Liminal context: store fresh content, search, validate scores + formatter
+  // --------------------------------------------------------------------------
+
+  skipE2E("formatLiminalContext produces structured XML from relevant memories", async () => {
+    // Store fresh, distinctive content so the search query matches with high relevance
+    const marker = `zyphrex_${Date.now()}`;
+    await backend.store({
+      content: `The ${marker} project launched its beta release yesterday. The team celebrated at the rooftop bar. Sarah announced she's moving to the Berlin office next quarter to lead the European expansion.`,
+      groupId: testGroup,
+    });
+
+    // Poll until EverMemOS extracts memories from the stored content
+    let results: Awaited<ReturnType<typeof backend.searchGroup>> = [];
+    for (let attempt = 0; attempt < 60; attempt++) {
+      await sleep(3000);
+      results = await backend.searchGroup({
+        query: `${marker} beta release Sarah Berlin European expansion`,
+        groupId: testGroup,
+        limit: 10,
+      });
+      if (results.length > 0) break;
+    }
+
+    expect(results.length).toBeGreaterThan(0);
+
+    // Scores should be numeric and positive
+    for (const r of results) {
+      expect(typeof r.score).toBe("number");
+      expect(r.score).toBeGreaterThan(0);
+    }
+
+    const maxScore = Math.max(...results.map((r) => r.score!));
+    const minScore = Math.min(...results.map((r) => r.score!));
+    console.log(`[evermemos] ${results.length} results, raw score range: ${minScore} - ${maxScore}`);
+
+    // With score normalization (scores / max), the default 0.3 threshold means
+    // "include results scoring at least 30% of the best match". This works
+    // regardless of raw score magnitude.
+    const output = formatLiminalContext(results);  // uses default 0.3
+
+    // Normalization guarantees the top result scores 1.0, so we should always
+    // get non-empty output when there are any results
+    expect(output).toBeTruthy();
+    console.log(`[evermemos] formatLiminalContext output (${output.length} chars):\n${output}`);
+
+    // Structure checks
+    expect(output).toMatch(/^<memory>/);
+    expect(output).toMatch(/<\/memory>$/);
+
+    // Should contain at least one typed section
+    expect(output).toMatch(/<(episodic|profile|foresight|event)>/);
+
+    // Content lines should respect the 2K cap
+    for (const line of output.split("\n")) {
+      if (line.trimStart().startsWith("- ")) {
+        const content = line.replace(/^\s*-\s*(\[[\d-: ]+\]\s*)?/, "");
+        expect(content.length).toBeLessThanOrEqual(2001); // 2000 + "…"
+      }
+    }
+  }, 600000);
 
 });
