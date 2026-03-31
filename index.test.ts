@@ -716,6 +716,121 @@ describe("openclaw-memory-rebac plugin", () => {
     expect(betaResult.prependContext).not.toContain("Alpha's private conversation");
   });
 
+  // ==========================================================================
+  // Canonical identity resolution tests
+  // ==========================================================================
+
+  test("memory_share resolves platform IDs to canonical names via identityLinks", async () => {
+    const { v1 } = await import("@authzed/authzed-node");
+    const mockClient = v1.NewClient();
+
+    const plugin = await import("./index.js");
+    const identityApi = {
+      ...mockApi,
+      config: {
+        session: {
+          identityLinks: {
+            carson: ["slack:U0AKAKPBCFL"],
+            mark: ["slack:U0XXXMARK"],
+          },
+        },
+      },
+    };
+    plugin.default.register(identityApi);
+
+    // Find memory_share tool
+    const shareTool = registeredTools.find((t) => t.name === "memory_share");
+    expect(shareTool).toBeDefined();
+
+    // Mock canShareFragment → allowed
+    mockClient.promises.checkPermission.mockResolvedValueOnce({ permissionship: 2 });
+    // Mock shareFragment write
+    mockClient.promises.writeRelationships.mockResolvedValueOnce({ writtenAt: { token: "share-token" } });
+
+    const result = await shareTool.execute("call-1", {
+      id: "fact:test-uuid-123",
+      share_with: ["U0AKAKPBCFL"],
+    });
+
+    // Should resolve Slack ID to canonical name in the response
+    expect(result.content[0].text).toContain("carson");
+    expect(result.details.targets).toContain("carson");
+    expect(result.details.targets).not.toContain("U0AKAKPBCFL");
+  });
+
+  test("memory_share passes through unknown IDs unchanged", async () => {
+    const { v1 } = await import("@authzed/authzed-node");
+    const mockClient = v1.NewClient();
+
+    const plugin = await import("./index.js");
+    const identityApi = {
+      ...mockApi,
+      config: {
+        session: {
+          identityLinks: {
+            carson: ["slack:U0AKAKPBCFL"],
+          },
+        },
+      },
+    };
+    plugin.default.register(identityApi);
+
+    const shareTool = registeredTools.find((t) => t.name === "memory_share");
+
+    mockClient.promises.checkPermission.mockResolvedValueOnce({ permissionship: 2 });
+    mockClient.promises.writeRelationships.mockResolvedValueOnce({ writtenAt: { token: "share-token" } });
+
+    const result = await shareTool.execute("call-1", {
+      id: "fact:test-uuid-123",
+      share_with: ["unknown-person-id"],
+    });
+
+    // Unknown ID should pass through unchanged
+    expect(result.details.targets).toContain("unknown-person-id");
+  });
+
+  test("memory_share accepts canonical names directly", async () => {
+    const { v1 } = await import("@authzed/authzed-node");
+    const mockClient = v1.NewClient();
+
+    const plugin = await import("./index.js");
+    const identityApi = {
+      ...mockApi,
+      config: {
+        session: {
+          identityLinks: {
+            carson: ["slack:U0AKAKPBCFL"],
+          },
+        },
+      },
+    };
+    plugin.default.register(identityApi);
+
+    const shareTool = registeredTools.find((t) => t.name === "memory_share");
+
+    mockClient.promises.checkPermission.mockResolvedValueOnce({ permissionship: 2 });
+    mockClient.promises.writeRelationships.mockResolvedValueOnce({ writtenAt: { token: "share-token" } });
+
+    const result = await shareTool.execute("call-1", {
+      id: "fact:test-uuid-123",
+      share_with: ["carson"],
+    });
+
+    // Canonical name should pass through as-is
+    expect(result.details.targets).toContain("carson");
+  });
+
+  test("identity resolution works without identityLinks configured", async () => {
+    const plugin = await import("./index.js");
+    // No config.session.identityLinks — default mockApi has no config field
+    plugin.default.register(mockApi);
+
+    // Plugin should register without errors
+    expect(registeredTools.length).toBeGreaterThan(0);
+    // No identity mapping log
+    expect(logs.some(log => log.includes("identity mappings"))).toBe(false);
+  });
+
   test("service.start() writes SpiceDB schema on first run", async () => {
     const { v1 } = await import("@authzed/authzed-node");
     const mockClient = v1.NewClient();

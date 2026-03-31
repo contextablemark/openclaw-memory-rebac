@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-03-31
+
+### Added
+
+- **Canonical identity resolution via `identityLinks`**: SpiceDB person IDs now resolve to canonical names using OpenClaw's `session.identityLinks` config. Agents can say `memory_share(id, ["carson"])` instead of raw platform IDs. Resolution is applied to `memory_share`, `memory_unshare`, `identities`, `groupOwners`, and `subjectId`. Falls back to raw IDs when `identityLinks` is not configured.
+
 ## [0.5.2] - 2026-03-30
 
 ### Fixed

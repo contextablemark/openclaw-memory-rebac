@@ -150,6 +150,38 @@ const rebacMemoryPlugin = {
     const liminal = cfg.isHybrid ? createLiminalBackend(cfg) : backend;
     const isHybrid = cfg.isHybrid;
     const spicedb = new SpiceDbClient(cfg.spicedb);
+
+    // Build canonical identity resolution from OpenClaw's identityLinks config.
+    // Maps platform-specific IDs (e.g. "U0AKAKPBCFL", "slack:U0AKAKPBCFL") to
+    // canonical names (e.g. "carson") for use as SpiceDB person IDs.
+    const identityLinksConfig: Record<string, string[]> =
+      (api as Record<string, unknown>).config &&
+      typeof (api as Record<string, unknown>).config === "object"
+        ? (((api as Record<string, unknown>).config as Record<string, unknown>)?.session as Record<string, unknown>)?.identityLinks as Record<string, string[]> ?? {}
+        : {};
+    const platformToCanonical = new Map<string, string>();
+    for (const [canonical, platformIds] of Object.entries(identityLinksConfig)) {
+      if (!Array.isArray(platformIds)) continue;
+      for (const pid of platformIds) {
+        if (typeof pid !== "string") continue;
+        platformToCanonical.set(pid, canonical);
+        const colonIdx = pid.indexOf(":");
+        if (colonIdx > 0) {
+          platformToCanonical.set(pid.slice(colonIdx + 1), canonical);
+        }
+      }
+    }
+    if (platformToCanonical.size > 0) {
+      api.logger.info(
+        `openclaw-memory-rebac: loaded ${platformToCanonical.size} identity mappings for ${Object.keys(identityLinksConfig).length} canonical identities`,
+      );
+    }
+
+    /** Resolve a target ID to canonical name. Returns input unchanged if no mapping exists. */
+    function resolveCanonical(targetId: string): string {
+      return platformToCanonical.get(targetId) ?? targetId;
+    }
+
     const backendDefaultGroupId = defaultGroupId(cfg);
     const liminalBaseGroupId = isHybrid
       ? ((cfg.liminalConfig["defaultGroupId"] as string) ?? "main")
@@ -595,7 +627,7 @@ const rebacMemoryPlugin = {
           "Only the memory's creator or a group admin can share.",
         parameters: Type.Object({
           id: Type.String({ description: "Memory ID to share (e.g. 'fact:da8650cb-...' or bare UUID)" }),
-          share_with: Type.Array(Type.String(), { description: "Person or agent IDs to grant view access" }),
+          share_with: Type.Array(Type.String(), { description: "Person names or IDs to grant view access (e.g. 'carson', 'U0ABC')" }),
         }),
         async execute(_toolCallId, params) {
 
@@ -624,8 +656,9 @@ const rebacMemoryPlugin = {
             };
           }
 
-          // Write involves relationships for each target
-          const targets: Subject[] = share_with.map((targetId) => ({
+          // Write involves relationships for each target (resolve to canonical names)
+          const resolvedTargets = share_with.map(resolveCanonical);
+          const targets: Subject[] = resolvedTargets.map((targetId) => ({
             type: "person" as const,
             id: targetId,
           }));
@@ -634,8 +667,8 @@ const rebacMemoryPlugin = {
           if (writeToken) state.lastWriteToken = writeToken;
 
           return {
-            content: [{ type: "text", text: `Shared memory "${uuid}" with: ${share_with.join(", ")}` }],
-            details: { action: "shared", id, uuid, targets: share_with },
+            content: [{ type: "text", text: `Shared memory "${uuid}" with: ${resolvedTargets.join(", ")}` }],
+            details: { action: "shared", id, uuid, targets: resolvedTargets },
           };
         },
       }),
@@ -651,7 +684,7 @@ const rebacMemoryPlugin = {
           "Removes the 'involves' relationship. Only the memory's creator or a group admin can unshare.",
         parameters: Type.Object({
           id: Type.String({ description: "Memory ID to unshare (e.g. 'fact:da8650cb-...' or bare UUID)" }),
-          revoke_from: Type.Array(Type.String(), { description: "Person or agent IDs to revoke view access from" }),
+          revoke_from: Type.Array(Type.String(), { description: "Person names or IDs to revoke view access from (e.g. 'carson', 'U0ABC')" }),
         }),
         async execute(_toolCallId, params) {
 
@@ -680,8 +713,9 @@ const rebacMemoryPlugin = {
             };
           }
 
-          // Remove involves relationships for each target
-          const targets: Subject[] = revoke_from.map((targetId) => ({
+          // Remove involves relationships for each target (resolve to canonical names)
+          const resolvedTargets = revoke_from.map(resolveCanonical);
+          const targets: Subject[] = resolvedTargets.map((targetId) => ({
             type: "person" as const,
             id: targetId,
           }));
@@ -689,8 +723,8 @@ const rebacMemoryPlugin = {
           await unshareFragment(spicedb, uuid, targets);
 
           return {
-            content: [{ type: "text", text: `Revoked access to "${uuid}" from: ${revoke_from.join(", ")}` }],
-            details: { action: "unshared", id, uuid, targets: revoke_from },
+            content: [{ type: "text", text: `Revoked access to "${uuid}" from: ${resolvedTargets.join(", ")}` }],
+            details: { action: "unshared", id, uuid, targets: resolvedTargets },
           };
         },
       }),
@@ -825,7 +859,7 @@ const rebacMemoryPlugin = {
     // CLI Commands
     // ========================================================================
 
-    const defaultSubject: Subject = { type: cfg.subjectType, id: cfg.subjectId };
+    const defaultSubject: Subject = { type: cfg.subjectType, id: resolveCanonical(cfg.subjectId) };
 
     api.registerCli(
       ({ program }) => {
@@ -1210,8 +1244,9 @@ const rebacMemoryPlugin = {
             api.logger.warn("openclaw-memory-rebac: failed to ensure default group membership");
           }
 
-          // Write agent → owner relationships from identities config
-          for (const [agentId, personId] of Object.entries(cfg.identities)) {
+          // Write agent → owner relationships from identities config (resolve to canonical names)
+          for (const [agentId, rawPersonId] of Object.entries(cfg.identities)) {
+            const personId = resolveCanonical(rawPersonId);
             try {
               const token = await spicedb.writeRelationships([
                 {
@@ -1236,9 +1271,10 @@ const rebacMemoryPlugin = {
             }
           }
 
-          // Write group → owner relationships from groupOwners config
+          // Write group → owner relationships from groupOwners config (resolve to canonical names)
           for (const [groupId, ownerIds] of Object.entries(cfg.groupOwners)) {
-            for (const ownerId of ownerIds) {
+            for (const rawOwnerId of ownerIds) {
+              const ownerId = resolveCanonical(rawOwnerId);
               try {
                 const ownerSubject: Subject = { type: "person", id: ownerId };
                 const token = await ensureGroupOwnership(spicedb, groupId, ownerSubject);
