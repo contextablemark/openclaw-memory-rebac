@@ -249,6 +249,44 @@ def patch():
     graphiti_mod = importlib.import_module("graphiti_core.graphiti")
     graphiti_mod.add_nodes_and_edges_bulk = patched_bulk_add
 
+    # -- Fix IndexError in extract_nodes when LLM returns out-of-range entity_type_id --
+    # v0.22.0 does entity_types_context[extracted_entity.entity_type_id] without
+    # bounds checking.  Small models (deepseek-r1:7b) return IDs beyond the list
+    # length.  Upstream v0.28.2 adds bounds checking; this backports it.
+    node_ops_mod = importlib.import_module(
+        "graphiti_core.utils.maintenance.node_operations"
+    )
+    original_extract_nodes = node_ops_mod.extract_nodes
+
+    async def safe_extract_nodes(*args, **kwargs):
+        try:
+            return await original_extract_nodes(*args, **kwargs)
+        except IndexError as e:
+            if "list index out of range" in str(e):
+                logger.warning(
+                    "extract_nodes: IndexError (out-of-range entity_type_id). "
+                    "Clamping all entity_type_ids to 0 and retrying."
+                )
+                # Patch the ExtractedEntity class to force entity_type_id=0,
+                # then retry the extraction (LLM response is cached in the retry).
+                _en_mod = importlib.import_module("graphiti_core.prompts.extract_nodes")
+                _OrigEntity = _en_mod.ExtractedEntity
+                _orig_validator = _OrigEntity.__init__
+
+                def _clamped_validator(self, *a, **kw):
+                    _orig_validator(self, *a, **kw)
+                    self.entity_type_id = 0
+
+                _OrigEntity.__init__ = _clamped_validator
+                try:
+                    return await original_extract_nodes(*args, **kwargs)
+                finally:
+                    _OrigEntity.__init__ = _orig_validator
+            raise
+
+    node_ops_mod.extract_nodes = safe_extract_nodes
+    graphiti_mod.extract_nodes = safe_extract_nodes
+
     # -- Fix TypeError in extract_edges when LLM returns None for node indices --
     # graphiti-core does `if not (-1 < source_idx < len(nodes) and -1 < target_idx < len(nodes))`
     # which crashes with TypeError if the LLM returns None for an index.
@@ -346,6 +384,40 @@ def patch():
             return (extracted_edge, [], [])
 
     edge_ops_mod.resolve_extracted_edge = safe_resolve_extracted_edge
+
+    # -- Guard embedder.create_batch against None/non-string inputs --
+    # Some LLMs (e.g., gemma3) extract entity nodes with None names.
+    # Ollama's /v1/embeddings endpoint returns 400 "invalid input" if any
+    # element in the batch is null.  Replace None/non-string values with
+    # empty strings so the batch succeeds and the rest of the pipeline
+    # can proceed.
+    original_create_batch = singleton_client.embedder.create_batch
+
+    async def safe_create_batch(inputs):
+        sanitized = [s if isinstance(s, str) else "" for s in inputs]
+        if not sanitized:
+            return []
+        return await original_create_batch(sanitized)
+
+    singleton_client.embedder.create_batch = safe_create_batch
+
+    # -- Disable thinking/reasoning tokens for reasoning models (deepseek-r1, qwen3) --
+    # These models emit long <think>...</think> blocks before answering, wasting
+    # inference time on extraction prompts.  Ollama supports `think: false` via
+    # extra_body to suppress this.  Patch the underlying AsyncOpenAI client's
+    # chat.completions.create to always inject it.
+    llm_client = singleton_client.llm_client
+    if hasattr(llm_client, 'client'):
+        original_create = llm_client.client.chat.completions.create
+
+        async def no_think_create(*args, **kwargs):
+            extra = kwargs.get('extra_body') or {}
+            extra['think'] = False
+            kwargs['extra_body'] = extra
+            return await original_create(*args, **kwargs)
+
+        llm_client.client.chat.completions.create = no_think_create
+        logger.info("Patched LLM client chat.completions.create with think=False")
 
     return app
 

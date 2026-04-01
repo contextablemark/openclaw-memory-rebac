@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Entity node extraction with local models**: Backported structured output from graphiti-core v0.28.2 into `JsonSafeLLMClient`. The v0.22.0 `OpenAIGenericClient` uses `response_format={'type': 'json_object'}` which doesn't enforce schema — local models return schema definitions or malformed JSON instead of conforming data. Now sends the Pydantic model's JSON schema via `response_format={'type': 'json_schema', ...}`, forcing Ollama (0.18+) to conform to the exact schema.
+- **Empty embedding batch crash**: Ollama's `/v1/embeddings` returns 400 for empty input arrays. Models that extract zero entities (e.g., gemma3) or entities with `None` names now short-circuit with `return []` instead of sending an empty batch.
+- **`entity_type_id` IndexError with small models**: Models like deepseek-r1:7b return entity type IDs beyond the valid range, crashing `extract_nodes`. Added a catch-and-retry that clamps invalid IDs to the default "Entity" type (backported from v0.28.2 bounds checking).
+
+### Added
+
+- **Reasoning token suppression**: Injects `think: false` via `extra_body` for all Graphiti LLM calls, suppressing `<think>...</think>` blocks from reasoning models (qwen3, deepseek-r1) that waste inference time on extraction prompts.
+
 ## [0.5.4] - 2026-03-31
 
 ### Fixed

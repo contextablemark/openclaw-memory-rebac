@@ -45,3 +45,4 @@ temp/
 
 # Development directories
 .dev/
+docker-compose.override.yml

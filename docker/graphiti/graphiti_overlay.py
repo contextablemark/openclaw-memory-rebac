@@ -99,28 +99,70 @@ def _create_reranker(settings: ExtendedSettings, llm_client):
 
 
 class JsonSafeLLMClient(OpenAIGenericClient):
-    """Wrapper that ensures 'json' appears in messages when response_format is json_object.
+    """LLM client with structured output support for Ollama and other local providers.
 
-    Groq (and some other providers) require the word 'json' in the messages
-    when response_format={"type": "json_object"} is used. Graphiti's internal
-    prompts don't always include it, causing 400 errors.
+    Two fixes over base OpenAIGenericClient (v0.22.0):
+
+    1. **Structured output**: When a response_model (Pydantic class) is provided,
+       sends its JSON schema via response_format={'type': 'json_schema', ...}
+       instead of plain {'type': 'json_object'}.  This forces Ollama (0.18+) to
+       conform to the exact schema — fixing entity node extraction with local models.
+       (Backported from graphiti-core v0.28.2; remove after upgrade.)
+
+    2. **JSON keyword injection**: Groq and some providers require the word 'json'
+       in messages when response_format is used.  Graphiti's prompts don't always
+       include it, causing 400 errors.
     """
 
     async def _generate_response(self, messages, response_model=None, **kwargs):
-        # Check if any message already contains the word 'json' (case-insensitive)
-        has_json_mention = any('json' in m.content.lower() for m in messages)
+        import json as _json
+        from openai.types.chat import ChatCompletionMessageParam
+
+        openai_messages: list[ChatCompletionMessageParam] = []
+        for m in messages:
+            m.content = self._clean_input(m.content)
+            if m.role == 'user':
+                openai_messages.append({'role': 'user', 'content': m.content})
+            elif m.role == 'system':
+                openai_messages.append({'role': 'system', 'content': m.content})
+
+        # Ensure 'json' appears in messages (Groq/Ollama requirement)
+        has_json_mention = any('json' in (m.get('content') or '').lower() for m in openai_messages)
         if not has_json_mention:
-            # Inject into the first system message, or prepend one
-            injected = False
-            for m in messages:
-                if m.role == 'system':
-                    m.content += '\nRespond in JSON format.'
-                    injected = True
+            for m in openai_messages:
+                if m['role'] == 'system':
+                    m['content'] += '\nRespond in JSON format.'
                     break
-            if not injected:
-                from graphiti_core.prompts.models import Message
-                messages.insert(0, Message(role='system', content='Respond in JSON format.'))
-        return await super()._generate_response(messages, response_model, **kwargs)
+            else:
+                openai_messages.insert(0, {'role': 'system', 'content': 'Respond in JSON format.'})
+
+        # Build response_format: use json_schema when we have a model, plain json otherwise
+        if response_model is not None:
+            schema_name = getattr(response_model, '__name__', 'structured_response')
+            json_schema = response_model.model_json_schema()
+            response_format = {
+                'type': 'json_schema',
+                'json_schema': {
+                    'name': schema_name,
+                    'schema': json_schema,
+                },
+            }
+        else:
+            response_format = {'type': 'json_object'}
+
+        try:
+            response = await self.client.chat.completions.create(
+                model=self.model or 'gpt-4.1-mini',
+                messages=openai_messages,
+                temperature=self.temperature,
+                max_tokens=self.max_tokens,
+                response_format=response_format,
+            )
+            result = response.choices[0].message.content or ''
+            return _json.loads(result)
+        except Exception as e:
+            logger.error(f'Error in generating LLM response: {e}')
+            raise
 
 
 def create_graphiti(settings: ExtendedSettings) -> OpenClawGraphiti:
