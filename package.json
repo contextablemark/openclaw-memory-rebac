@@ -36,7 +36,7 @@
     "openclaw": "*"
   },
   "scripts": {
-    "build": "rm -rf dist && tsc -p tsconfig.build.json && cp plugin.defaults.json dist/ && mkdir -p dist/backends && cp backends/graphiti.defaults.json backends/evermemos.defaults.json dist/backends/",
+    "build": "rm -rf dist && tsc -p tsconfig.build.json && cp plugin.defaults.json schema.zed dist/ && mkdir -p dist/backends && cp backends/graphiti.defaults.json backends/evermemos.defaults.json dist/backends/",
     "prepublishOnly": "npm run build",
     "cli": "tsx bin/rebac-mem.ts",
     "typecheck": "tsc 2>&1 | grep -v '../openclaw/' | grep -c 'error TS' | xargs -I{} test {} -eq 0",
