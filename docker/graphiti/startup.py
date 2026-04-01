@@ -138,7 +138,6 @@ def patch():
     original_bulk_add = bulk_mod.add_nodes_and_edges_bulk
 
     # Reserved keys that must not be overwritten by LLM-extracted attributes.
-    # See: https://github.com/contextablemark/openclaw-memory-rebac/issues/6
     RESERVED_EDGE_KEYS = {
         'uuid', 'source_node_uuid', 'target_node_uuid', 'name',
         'fact', 'fact_embedding', 'group_id', 'episodes',
@@ -150,11 +149,6 @@ def patch():
     }
 
     # Edge names that represent deduplication artifacts, not real semantic facts.
-    # Older graphiti-core versions created these during node resolution; the LLM
-    # may also extract them as relationships.  Neither source is useful — upstream
-    # abandoned IS_DUPLICATE_OF edges and the information is redundant with node
-    # UUID reuse.  Matched case-insensitively with space/underscore normalization.
-    # See: https://github.com/contextablemark/openclaw-memory-rebac/issues/12
     RESERVED_EDGE_NAMES = {
         'IS_DUPLICATE_OF',
         'DUPLICATE_OF',
@@ -189,8 +183,6 @@ def patch():
             if node.attributes:
                 node.attributes = _sanitize_attributes(node.attributes, RESERVED_NODE_KEYS)
         for edge in entity_edges:
-            # DIAGNOSTIC: log clobber attempts BEFORE stripping (so we can
-            # verify the fix is catching them).  Keep until confirmed in prod.
             if edge.attributes and 'fact_embedding' in edge.attributes:
                 logger.warning(
                     "DIAG attributes_clobber: edge=%s has 'fact_embedding' in attributes! "
@@ -199,7 +191,7 @@ def patch():
                 )
             if edge.attributes:
                 edge.attributes = _sanitize_attributes(edge.attributes, RESERVED_EDGE_KEYS)
-            # DIAGNOSTIC: log edges with missing/invalid embeddings
+            # Diagnostic: log edges with missing/invalid embeddings
             emb = edge.fact_embedding
             emb_ok = isinstance(emb, list) and len(emb) > 0 and all(isinstance(x, (int, float)) for x in emb[:5])
             if not emb_ok:
@@ -213,9 +205,8 @@ def patch():
                     list((edge.attributes or {}).keys()),
                     edge.source_node_uuid, edge.target_node_uuid,
                 )
+
         # Filter deduplication-artifact edges (IS_DUPLICATE_OF and variants).
-        # These are not real facts — they are structural metadata that upstream
-        # graphiti-core has since abandoned.
         original_edge_count = len(entity_edges)
         entity_edges = [e for e in entity_edges if not _is_reserved_edge_name(e.name)]
         dup_filtered = original_edge_count - len(entity_edges)
@@ -249,102 +240,15 @@ def patch():
     graphiti_mod = importlib.import_module("graphiti_core.graphiti")
     graphiti_mod.add_nodes_and_edges_bulk = patched_bulk_add
 
-    # -- Fix IndexError in extract_nodes when LLM returns out-of-range entity_type_id --
-    # v0.22.0 does entity_types_context[extracted_entity.entity_type_id] without
-    # bounds checking.  Small models (deepseek-r1:7b) return IDs beyond the list
-    # length.  Upstream v0.28.2 adds bounds checking; this backports it.
-    node_ops_mod = importlib.import_module(
-        "graphiti_core.utils.maintenance.node_operations"
-    )
-    original_extract_nodes = node_ops_mod.extract_nodes
-
-    async def safe_extract_nodes(*args, **kwargs):
-        try:
-            return await original_extract_nodes(*args, **kwargs)
-        except IndexError as e:
-            if "list index out of range" in str(e):
-                logger.warning(
-                    "extract_nodes: IndexError (out-of-range entity_type_id). "
-                    "Clamping all entity_type_ids to 0 and retrying."
-                )
-                # Patch the ExtractedEntity class to force entity_type_id=0,
-                # then retry the extraction (LLM response is cached in the retry).
-                _en_mod = importlib.import_module("graphiti_core.prompts.extract_nodes")
-                _OrigEntity = _en_mod.ExtractedEntity
-                _orig_validator = _OrigEntity.__init__
-
-                def _clamped_validator(self, *a, **kw):
-                    _orig_validator(self, *a, **kw)
-                    self.entity_type_id = 0
-
-                _OrigEntity.__init__ = _clamped_validator
-                try:
-                    return await original_extract_nodes(*args, **kwargs)
-                finally:
-                    _OrigEntity.__init__ = _orig_validator
-            raise
-
-    node_ops_mod.extract_nodes = safe_extract_nodes
-    graphiti_mod.extract_nodes = safe_extract_nodes
-
-    # -- Fix TypeError in extract_edges when LLM returns None for node indices --
-    # graphiti-core does `if not (-1 < source_idx < len(nodes) and -1 < target_idx < len(nodes))`
-    # which crashes with TypeError if the LLM returns None for an index.
-    #
-    # Primary fix: filter bad edges at model-parse level so valid edges from the same
-    # episode are preserved. Only applies when the Edge model has int fields (old
-    # index-based validation); a no-op for newer name-based validation.
-    # Fallback: catch TypeError from the whole function (loses all edges for that episode).
+    # -- Filter IS_DUPLICATE_OF edges early in extract_edges --
+    # Catches them before embedding computation to save resources.
     edge_ops_mod = importlib.import_module(
         "graphiti_core.utils.maintenance.edge_operations"
     )
     original_extract_edges = edge_ops_mod.extract_edges
 
-    try:
-        _ep_mod = importlib.import_module("graphiti_core.prompts.extract_edges")
-        _OrigExtractedEdges = _ep_mod.ExtractedEdges
-        _OrigEdge = _ep_mod.Edge
-
-        # Collect Optional[int] fields (present in old index-based Edge model)
-        _int_fields = []
-        for _fname, _finfo in _OrigEdge.model_fields.items():
-            _ann = _finfo.annotation
-            if _ann is int:
-                _int_fields.append(_fname)
-            elif hasattr(_ann, "__args__") and int in _ann.__args__:
-                _int_fields.append(_fname)
-
-        if _int_fields:
-            _orig_mv = _OrigExtractedEdges.model_validate
-
-            @classmethod  # type: ignore[misc]
-            def _filtered_model_validate(cls, obj, *a, **kw):
-                result = _orig_mv.__func__(cls, obj, *a, **kw)
-                if result.edges:
-                    valid = [e for e in result.edges if all(getattr(e, f) is not None for f in _int_fields)]
-                    dropped = len(result.edges) - len(valid)
-                    if dropped:
-                        logger.warning("extract_edges: filtered %d edge(s) with None index fields", dropped)
-                    result.edges = valid
-                return result
-
-            _OrigExtractedEdges.model_validate = _filtered_model_validate
-            logger.info("Patched ExtractedEdges.model_validate to filter None int fields: %s", _int_fields)
-        else:
-            logger.info("ExtractedEdges uses name-based validation — None-index filter not needed")
-    except Exception as _patch_err:
-        logger.warning("Could not patch ExtractedEdges for None-index filtering: %s", _patch_err)
-
-    # Fallback: catch any remaining TypeError from the whole function,
-    # and filter IS_DUPLICATE_OF edges early (before embedding computation).
     async def safe_extract_edges(*args, **kwargs):
-        try:
-            result = await original_extract_edges(*args, **kwargs)
-        except TypeError as e:
-            if "not supported between instances" in str(e):
-                logger.warning("extract_edges skipped due to LLM output issue: %s", e)
-                return []
-            raise
+        result = await original_extract_edges(*args, **kwargs)
         if result:
             original_len = len(result)
             result = [e for e in result if not _is_reserved_edge_name(e.name)]
@@ -357,33 +261,7 @@ def patch():
         return result
 
     edge_ops_mod.extract_edges = safe_extract_edges
-    # Patch the local binding in graphiti.py
     graphiti_mod.extract_edges = safe_extract_edges
-
-    # -- Guard resolve_extracted_edge against IndexError from out-of-bounds
-    # contradicted_facts indices (issue #22) --
-    # The LLM sometimes returns fact indices that exceed the existing_edges list
-    # length, crashing the list comprehension. Upstream v0.28.2+ adds bounds
-    # checking; this patch provides equivalent safety for pinned v0.22.0.
-    original_resolve_extracted_edge = edge_ops_mod.resolve_extracted_edge
-
-    async def safe_resolve_extracted_edge(*args, **kwargs):
-        try:
-            return await original_resolve_extracted_edge(*args, **kwargs)
-        except IndexError as e:
-            logger.warning(
-                "resolve_extracted_edge: IndexError caught (out-of-bounds "
-                "contradicted_facts index): %s — returning edge as-is with "
-                "no invalidations",
-                e,
-            )
-            # args[1] is extracted_edge per the function signature
-            extracted_edge = args[1] if len(args) > 1 else kwargs.get("extracted_edge")
-            if extracted_edge is None:
-                raise
-            return (extracted_edge, [], [])
-
-    edge_ops_mod.resolve_extracted_edge = safe_resolve_extracted_edge
 
     # -- Guard embedder.create_batch against None/non-string inputs --
     # Some LLMs (e.g., gemma3) extract entity nodes with None names.

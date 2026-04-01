@@ -167,7 +167,7 @@ NEO4J_USER=neo4j
 NEO4J_PASSWORD=graphiti-password
 ```
 
-The custom Docker image (`docker/graphiti/Dockerfile`) extends `zepai/graphiti:latest` with `ExtendedSettings` that reads these environment variables for per-component configuration. This is critical for local-model setups where the LLM, embedder, and reranker may all use different endpoints and models.
+The custom Docker image (`docker/graphiti/Dockerfile`) is built from source with `ExtendedSettings` that reads these environment variables for per-component configuration. This is critical for local-model setups where the LLM, embedder, and reranker may all use different endpoints and models.
 
 #### Using a Remote GPU Server
 
@@ -185,7 +185,7 @@ The Graphiti container uses `extra_hosts: host.docker.internal:host-gateway` by 
 If you prefer to run services outside Docker:
 
 1. **Neo4j**: `docker run -p 7687:7687 -p 7474:7474 neo4j:5.26.2` (pin to 5.26.2 — later versions cause IncompleteCommit errors)
-2. **Graphiti**: Build the custom image from `docker/graphiti/Dockerfile`, or run the base `zepai/graphiti` image with the overlay files
+2. **Graphiti**: Build the custom image from `docker/graphiti/Dockerfile` (clones the Contextable fork at build time)
 3. **PostgreSQL**: Any PostgreSQL 14+ instance
 4. **SpiceDB**: See [SpiceDB docs](https://authzed.com/docs/spicedb/getting-started)
 
@@ -484,7 +484,9 @@ The Neo4j browser is available at `http://localhost:7474` for browsing the knowl
 
 ### Custom Docker Image
 
-The custom Graphiti image (`docker/graphiti/Dockerfile`) extends `zepai/graphiti:latest` with several runtime patches applied in `startup.py`. These patches address issues that surface when running Graphiti with local models (Ollama) rather than OpenAI:
+The custom Graphiti image (`docker/graphiti/Dockerfile`) is built from source using the [Contextable graphiti fork](https://github.com/Contextable/graphiti) (graphiti-core v0.28.1, pinned to commit `aa68b38`). The Dockerfile clones the repo at build time from a `python:3.12-slim` base, making builds fully reproducible without requiring a local checkout.
+
+Several runtime patches are applied in `startup.py` to address issues that surface when running Graphiti with local models (Ollama) rather than OpenAI:
 
 | Patch | Problem | Fix |
 |-------|---------|-----|
@@ -493,9 +495,12 @@ The custom Graphiti image (`docker/graphiti/Dockerfile`) extends `zepai/graphiti
 | **Startup retry** | Neo4j not ready when Graphiti starts | Exponential backoff retry for `build_indices_and_constraints()` |
 | **Resilient AsyncWorker** | Upstream worker only catches `CancelledError`; any other exception kills it silently | Catch all exceptions, log, and continue processing |
 | **Attribute sanitization** | Local LLMs return nested dicts/lists in entity attributes; Neo4j rejects non-primitive property values | Flatten to JSON strings before Neo4j write for both entity nodes and edges |
-| **Safe extract_edges** | Local LLMs sometimes return `None` for node indices | Catch `TypeError`, log warning, return empty list |
+| **IS_DUPLICATE_OF filtering** | `dedupe_nodes_bulk` creates deduplication-artifact edges that pollute the graph | Filter at both `extract_edges` and `bulk_add` levels |
+| **Self-referential edge filtering** | LLMs sometimes extract edges where source == target | Filter before Neo4j write |
+| **Empty batch guard** | Ollama returns 400 for empty embedding input arrays | Short-circuit `create_batch([])` with `return []` |
+| **Think token suppression** | Reasoning models (qwen3, deepseek-r1) emit `<think>` blocks on extraction prompts | Inject `think: false` via `extra_body` |
 
-These are runtime monkey-patches applied via `importlib` — they depend on upstream's internal module structure and may need updating when the base image changes.
+These are runtime monkey-patches applied via `importlib` — they depend on upstream's internal module structure and may need updating when graphiti-core is upgraded.
 
 ## Standalone CLI
 

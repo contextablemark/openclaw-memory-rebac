@@ -1,47 +1,54 @@
 ###############################################################################
-# Custom Graphiti FastAPI server with per-component LLM/embedder/reranker
-# configurability and BGE reranker support.
+# Custom Graphiti FastAPI server — built from source (Contextable fork).
 #
-# Extends the base zepai/graphiti image to:
-#   1. Install sentence-transformers for BGE reranker
-#   2. Overlay per-component config + startup to wire separate clients
+# Clones graphiti-core v0.28.1 + graph_service server from GitHub at build
+# time, pinned to a specific commit for reproducibility.  Overlays our
+# per-component config, client factory, and runtime patches.
 #
-# UPGRADE AUDIT (vs upstream getzep/graphiti v0.28.2, audited 2026-03-24):
-#   Overlay patches in startup.py — 6 of 7 still needed:
-#   [NEEDED]  AsyncWorker crash-on-error recovery      (startup.py:109-126)
-#   [NEEDED]  Neo4j nested attribute sanitization       (startup.py:128-250)
-#   [SAFE]    None-index extract_edges fix              (startup.py:252-298)
-#             — fixed upstream (name-based model); patch self-disables
-#   [NEEDED]  IS_DUPLICATE_OF edge filtering            (startup.py:152-169,216-227,310-318)
-#   [NEEDED]  Self-referential edge filtering           (startup.py:228-239)
-#   [NEEDED]  Singleton client / per-request fix        (startup.py:38-87)
-#   [NEEDED]  resolve_extracted_edge IndexError guard   (startup.py:325-349)
-#             — fixed upstream v0.28.2+; no Docker image published beyond 0.22.0
+# Overlay patches still applied in startup.py:
+#   - AsyncWorker crash-on-error recovery
+#   - Neo4j nested attribute sanitization
+#   - IS_DUPLICATE_OF edge filtering
+#   - Self-referential edge filtering
+#   - Singleton client / per-request fix
+#   - Empty batch embedder guard
+#   - Think token suppression (reasoning models)
+#   - Episodes edges endpoint (custom)
 ###############################################################################
 
-FROM zepai/graphiti:0.22.0
+FROM python:3.12-slim
 
-# Base image runs as non-root "app" user; switch to root to install packages
-USER root
+ARG GRAPHITI_REPO=https://github.com/Contextable/graphiti.git
+ARG GRAPHITI_COMMIT=aa68b38
 
-# Ensure the venv is active for all subsequent RUN and CMD
-ENV VIRTUAL_ENV=/app/.venv
-ENV PATH="/app/.venv/bin:${PATH}"
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends gcc g++ git \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd -m -u 1000 app \
+    && pip install --no-cache-dir uv
 
-# Install sentence-transformers for BGE reranker (runs locally, no API needed)
-RUN uv pip install 'sentence-transformers>=3.2.1' \
-    && python -c "import sentence_transformers; print('OK')"
+WORKDIR /app
 
-# Overlay: per-component config + startup
-COPY config_overlay.py /app/graph_service/config_overlay.py
-COPY graphiti_overlay.py /app/graph_service/graphiti_overlay.py
+# Clone graphiti from source, pinned to specific commit
+RUN git clone "$GRAPHITI_REPO" /tmp/graphiti \
+    && cd /tmp/graphiti && git checkout "$GRAPHITI_COMMIT"
+
+# Install core library (with sentence-transformers for BGE reranker) + server
+RUN cd /tmp/graphiti && uv pip install --system ".[sentence-transformers]" \
+    && cd /tmp/graphiti/server && uv pip install --system . \
+    && python -c "import graphiti_core; import graph_service; print('OK')" \
+    && rm -rf /tmp/graphiti
+
+# Find the installed graph_service package location and overlay our files there.
+# startup.py goes to /app/ (the working directory).
+COPY config_overlay.py graphiti_overlay.py /tmp/overlay/
+RUN SITE=$(python -c "import graph_service, os; print(os.path.dirname(graph_service.__file__))") \
+    && cp /tmp/overlay/config_overlay.py "$SITE/config_overlay.py" \
+    && cp /tmp/overlay/graphiti_overlay.py "$SITE/graphiti_overlay.py" \
+    && rm -rf /tmp/overlay
 COPY startup.py /app/startup.py
 
-# Fix ownership for app user
 RUN chown -R app:app /app
-
-# Switch back to non-root user
 USER app
 
-# Run startup directly via venv python (not `uv run`, which may reset the venv)
-CMD ["/app/.venv/bin/python", "/app/startup.py"]
+CMD ["python", "/app/startup.py"]

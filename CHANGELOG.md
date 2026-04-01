@@ -7,11 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Graphiti Docker image built from source (v0.28.1)**: Replaced `FROM zepai/graphiti:0.22.0` base image with a fully reproducible source build from the [Contextable graphiti fork](https://github.com/Contextable/graphiti), pinned to commit `aa68b38`. The new Dockerfile starts from `python:3.12-slim`, clones the repo at build time via `git clone`, and installs both `graphiti-core` and `graph_service` (the FastAPI server) using `uv`. Upgrades graphiti-core from v0.22.0 to v0.28.1, gaining native structured output (`json_schema` response format), name-based edge model, and upstream bug fixes.
+- **Overlay files installed to site-packages**: `config_overlay.py` and `graphiti_overlay.py` are now copied into the installed `graph_service` package location (dynamically discovered at build time) instead of a local `/app/graph_service/` directory.
+- **Docker healthcheck uses Python**: Replaced `curl` with `python -c "import httpx; ..."` since `curl` is not available in the `python:3.12-slim` base image.
+- **`JsonSafeLLMClient` simplified**: Removed the `_generate_response` override that backported structured output — v0.28.1's `OpenAIGenericClient` natively uses `json_schema` response format. The class now only injects the `"json"` keyword into system messages for Groq/Ollama compatibility.
+- **`create_graphiti()` reranker wiring simplified**: Removed the `_create_reranker()` wrapper function. Reranker construction now uses native `BGERerankerClient` and `OpenAIRerankerClient` imports directly from `graphiti_core.cross_encoder`.
+- **Runtime patches reduced from 13 to 8**: Five patches removed (see Removed below). Remaining patches: singleton client lifecycle, resilient AsyncWorker, Neo4j attribute sanitization, reserved key protection, IS_DUPLICATE_OF edge filtering, self-referential edge filtering, empty batch embedder guard, and episodes edges endpoint.
+
+### Removed
+
+- **Structured output backport** (`JsonSafeLLMClient._generate_response` override): v0.28.1's `OpenAIGenericClient` natively uses `json_schema` structured output, making the backport unnecessary.
+- **`entity_type_id` IndexError guard** (`safe_extract_nodes` in `startup.py`): v0.28.1 has bounds checking for entity type IDs (line 184 of `extract_nodes`).
+- **`resolve_extracted_edge` IndexError guard** (`safe_resolve_extracted_edge` in `startup.py`): v0.28.1 validates `contradicted_facts` indices before access (line 591 of `resolve_extracted_edge`).
+- **None-index edge filtering** (`safe_extract_edges` TypeError guard in `startup.py`): v0.28.1 uses a name-based edge model (`source_entity_name`/`target_entity_name` strings) instead of integer indices, eliminating the `None` index failure mode.
+- **Custom `_create_reranker()` wrapper** (in `graphiti_overlay.py`): v0.28.1 has native `BGERerankerClient` support in `graphiti_core.cross_encoder.bge_reranker_client`.
+
 ### Fixed
 
-- **Entity node extraction with local models**: Backported structured output from graphiti-core v0.28.2 into `JsonSafeLLMClient`. The v0.22.0 `OpenAIGenericClient` uses `response_format={'type': 'json_object'}` which doesn't enforce schema — local models return schema definitions or malformed JSON instead of conforming data. Now sends the Pydantic model's JSON schema via `response_format={'type': 'json_schema', ...}`, forcing Ollama (0.18+) to conform to the exact schema.
 - **Empty embedding batch crash**: Ollama's `/v1/embeddings` returns 400 for empty input arrays. Models that extract zero entities (e.g., gemma3) or entities with `None` names now short-circuit with `return []` instead of sending an empty batch.
-- **`entity_type_id` IndexError with small models**: Models like deepseek-r1:7b return entity type IDs beyond the valid range, crashing `extract_nodes`. Added a catch-and-retry that clamps invalid IDs to the default "Entity" type (backported from v0.28.2 bounds checking).
 
 ### Added
 

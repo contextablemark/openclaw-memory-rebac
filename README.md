@@ -525,11 +525,11 @@ Both stacks share the same SpiceDB sub-stack — same authorization schema, same
 | `neo4j` | 7687, 7474 | Graph database (Bolt protocol) + browser UI |
 | `graphiti` | 8000 | Custom Graphiti FastAPI server (REST) |
 
-The custom Docker image extends `zepai/graphiti:latest` with:
+The custom Docker image is built from source using the [Contextable graphiti fork](https://github.com/Contextable/graphiti) (graphiti-core v0.28.1, pinned to commit `aa68b38`). It includes:
 - **`OpenClawGraphiti`** — subclass of base `Graphiti` (bypasses `ZepGraphiti` to properly forward embedder/cross_encoder)
 - **`ExtendedSettings`** — per-component LLM, embedder, and reranker configuration
-- **BGE reranker** — local sentence-transformers model (no API needed)
-- **Runtime patches** — singleton client lifecycle, Neo4j attribute sanitization, resilient AsyncWorker, startup retry with backoff
+- **BGE reranker** — local sentence-transformers model (no API needed), using graphiti-core's native `BGERerankerClient`
+- **Runtime patches** — singleton client lifecycle, Neo4j attribute sanitization, resilient AsyncWorker, IS_DUPLICATE_OF/self-referential edge filtering, empty batch guard, reasoning token suppression, startup retry with backoff
 
 ### SpiceDB Stack (`docker/spicedb/`)
 
