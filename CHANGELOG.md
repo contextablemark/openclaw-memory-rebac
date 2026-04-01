@@ -32,6 +32,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Reasoning token suppression**: Injects `think: false` via `extra_body` for all Graphiti LLM calls, suppressing `<think>...</think>` blocks from reasoning models (qwen3, deepseek-r1) that waste inference time on extraction prompts.
 
+## [0.5.5] - 2026-04-01
+
+### Fixed
+
+- **`schema.zed` missing from `dist/` after build**: The build script did not copy `schema.zed` into the `dist/` directory. Since `index.ts` and `cli.ts` resolve the file relative to `import.meta.url` (which points to `dist/index.js`), the SpiceDB schema write failed on fresh installs with a file-not-found error.
+
+### Changed
+
+- **Graphiti Docker image built from source (v0.28.1)**: Replaced `FROM zepai/graphiti:0.22.0` base image with a fully reproducible source build from the [Contextable graphiti fork](https://github.com/Contextable/graphiti), pinned to commit `aa68b38`. Upgrades graphiti-core from v0.22.0 to v0.28.1, gaining native structured output, name-based edge model, and upstream bug fixes. Runtime patches reduced from 13 to 8.
+
 ## [0.5.4] - 2026-03-31
 
 ### Fixed
